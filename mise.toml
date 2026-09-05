@@ -1,6 +1,7 @@
 [tools]
 go = "1.27.1"
 node = "24.20.0"
+air = "1.67.4"
 
 [tasks.deps]
 description = "Install locked frontend dependencies"
@@ -19,9 +20,8 @@ description = "Type-check and build the frontend"
 run = "npm run build"
 
 [tasks.serve]
-description = "Build the frontend and start the Go server"
-depends = ["build"]
-run = "go run ."
+description = "Watch sources, rebuild the frontend, and restart Go with Air"
+run = "air -c .air.toml"
 
 [tasks."build:server"]
 description = "Build a standalone Go binary with the frontend embedded"
@@ -43,4 +43,5 @@ run = """
 go version
 node --version
 npm --version
+air -v
 """

@@ -4,7 +4,7 @@ A collaborative artifact workspace built with Go and TypeScript. The initial foc
 
 ## Toolchain
 
-Mise is the entry point for project tooling and commands. Go and Node.js versions are pinned in `mise.toml`; npm comes with Node.js. Install mise before continuing.
+Mise is the entry point for project tooling and commands. Go, Node.js, and Air versions are pinned in `mise.toml`; npm comes with Node.js. Install mise before continuing.
 
 From the repository root:
 
@@ -51,7 +51,7 @@ mise run preview    # serve the existing build locally (not for production)
 The Go module is `github.com/bdswaney/canvas`. `main.go` embeds the Vite build into the server binary and serves the application and its static assets.
 
 ```sh
-mise run serve         # build frontend and start Go at http://127.0.0.1:8080
+mise run serve         # watch, rebuild, and serve at http://127.0.0.1:8080
 mise run test          # build frontend and run Go routing tests
 mise run build:server  # produce bin/canvas with frontend embedded
 ```
@@ -62,4 +62,6 @@ Opening or refreshing an extensionless route such as `/artifacts/123` serves the
 
 Because `dist/` is embedded at compile time and is not committed, run `mise run deps` and `mise run build` before invoking Go compilation directly on a fresh checkout. The server tasks handle the frontend build automatically. The resulting binary needs neither Node.js nor an external `dist/` directory at runtime. Rebuild it after frontend changes.
 
-Use `mise run dev` for Vite hot reload during UI development; the Go server serves the built frontend, not the live Vite source.
+`mise run serve` runs Air using `.air.toml`. It builds once at startup, then rebuilds the frontend and restarts Go when Go or frontend source files change. Generated files in `dist/`, `.tmp/`, and `bin/` and dependencies in `node_modules/` are excluded to avoid rebuild loops. Build failures stop the old server instead of silently serving stale code. Press Ctrl+C to stop Air and its server.
+
+Refresh the browser after an Air rebuild. For frontend hot module replacement without manual refresh, use `mise run dev` instead; Air's Go server serves the embedded build, not the live Vite source. Air is development-only; deploy `bin/canvas` from `mise run build:server`.

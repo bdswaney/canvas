@@ -1,0 +1,19 @@
+root = "."
+tmp_dir = ".tmp"
+
+[build]
+# Rebuild Vite before Go embeds dist/. Generated output is excluded below.
+cmd = "npm run build && go build -o ./.tmp/canvas ."
+entrypoint = ["./.tmp/canvas"]
+delay = 500
+include_ext = ["go", "mod", "sum", "ts", "tsx", "js", "jsx", "json", "html", "css"]
+exclude_dir = [".git", ".tmp", "bin", "dist", "node_modules", "docs", "vendor"]
+stop_on_error = true
+send_interrupt = true
+kill_delay = "1s"
+
+[log]
+time = true
+
+[misc]
+clean_on_exit = true
