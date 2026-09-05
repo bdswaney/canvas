@@ -66,3 +66,4 @@ logs/
 # Local tooling
 .direnv/
 .mise.local.toml
+mise.local.toml
