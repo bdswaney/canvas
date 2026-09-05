@@ -1,0 +1,47 @@
+[tools]
+go = "1.27.1"
+node = "24.20.0"
+air = "1.67.4"
+
+[tasks.deps]
+description = "Install locked frontend dependencies"
+run = "npm ci"
+
+[tasks.dev]
+description = "Start the frontend development server"
+run = "npm run dev"
+
+[tasks.typecheck]
+description = "Type-check the frontend"
+run = "npm run typecheck"
+
+[tasks.build]
+description = "Type-check and build the frontend"
+run = "npm run build"
+
+[tasks.serve]
+description = "Watch sources, rebuild the frontend, and restart Go with Air"
+run = "air -c .air.toml"
+
+[tasks."build:server"]
+description = "Build a standalone Go binary with the frontend embedded"
+depends = ["build"]
+run = "go build -o bin/canvas ."
+
+[tasks.test]
+description = "Build the frontend and run Go tests"
+depends = ["build"]
+run = "go test ./..."
+
+[tasks.preview]
+description = "Preview the built frontend locally"
+run = "npm run preview"
+
+[tasks.doctor]
+description = "Check the project toolchain"
+run = """
+go version
+node --version
+npm --version
+air -v
+"""
