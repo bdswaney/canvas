@@ -45,3 +45,21 @@ mise run preview    # serve the existing build locally (not for production)
 ```
 
 `src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. Yjs is installed but is not wired into React.
+
+## Go server and deep links
+
+The Go module is `github.com/bdswaney/canvas`. `main.go` embeds the Vite build into the server binary and serves the application and its static assets.
+
+```sh
+mise run serve         # build frontend and start Go at http://127.0.0.1:8080
+mise run test          # build frontend and run Go routing tests
+mise run build:server  # produce bin/canvas with frontend embedded
+```
+
+Set `ADDR` to override the listening address, for example `ADDR=127.0.0.1:9090 mise run serve`. Bind to `0.0.0.0:8080` only when you intend to expose the server beyond localhost.
+
+Opening or refreshing an extensionless route such as `/artifacts/123` serves the React entry point. Missing files, `/assets/*`, and reserved `/api` paths return 404 instead of falling back to HTML. Only GET and HEAD are supported. React currently displays the same shell for every client route; route-specific screens are not implemented yet.
+
+Because `dist/` is embedded at compile time and is not committed, run `mise run deps` and `mise run build` before invoking Go compilation directly on a fresh checkout. The server tasks handle the frontend build automatically. The resulting binary needs neither Node.js nor an external `dist/` directory at runtime. Rebuild it after frontend changes.
+
+Use `mise run dev` for Vite hot reload during UI development; the Go server serves the built frontend, not the live Vite source.

@@ -18,6 +18,21 @@ run = "npm run typecheck"
 description = "Type-check and build the frontend"
 run = "npm run build"
 
+[tasks.serve]
+description = "Build the frontend and start the Go server"
+depends = ["build"]
+run = "go run ."
+
+[tasks."build:server"]
+description = "Build a standalone Go binary with the frontend embedded"
+depends = ["build"]
+run = "go build -o bin/canvas ."
+
+[tasks.test]
+description = "Build the frontend and run Go tests"
+depends = ["build"]
+run = "go test ./..."
+
 [tasks.preview]
 description = "Preview the built frontend locally"
 run = "npm run preview"
