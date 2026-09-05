@@ -67,3 +67,6 @@ logs/
 .direnv/
 .mise.local.toml
 mise.local.toml
+
+# Downloaded reference documentation
+/docs/mantine/llms.txt

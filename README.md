@@ -32,4 +32,16 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 - Define repeatable project workflows as mise tasks as implementation is added. CI should use the same pinned tools and tasks.
 - Do not commit credentials or machine-specific overrides. Use ignored `mise.local.toml` for local overrides.
 
-No application dependencies or services have been introduced yet.
+## Frontend
+
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It currently contains only an application shell; no editor, artifact preview, or collaboration connection is implemented.
+
+```sh
+mise run deps       # install dependencies from package-lock.json
+mise run dev        # start Vite; open the URL printed in the terminal
+mise run typecheck  # check TypeScript
+mise run build      # type-check and build into dist/
+mise run preview    # serve the existing build locally (not for production)
+```
+
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. Yjs is installed but is not wired into React.

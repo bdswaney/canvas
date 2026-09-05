@@ -2,6 +2,26 @@
 go = "1.27.1"
 node = "24.20.0"
 
+[tasks.deps]
+description = "Install locked frontend dependencies"
+run = "npm ci"
+
+[tasks.dev]
+description = "Start the frontend development server"
+run = "npm run dev"
+
+[tasks.typecheck]
+description = "Type-check the frontend"
+run = "npm run typecheck"
+
+[tasks.build]
+description = "Type-check and build the frontend"
+run = "npm run build"
+
+[tasks.preview]
+description = "Preview the built frontend locally"
+run = "npm run preview"
+
 [tasks.doctor]
 description = "Check the project toolchain"
 run = """
