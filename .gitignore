@@ -1,0 +1,68 @@
+# Go
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/go.work
+/go.work.sum
+vendor/
+
+# Test and coverage output
+coverage/
+coverage.out
+*.prof
+
+# Node / TypeScript
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.npm/
+.pnpm-store/
+.yarn/
+.yarn-cache/
+.yarn-integrity
+*.tsbuildinfo
+
+# Build output
+dist/
+build/
+out/
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+.cache/
+.tmp/
+.tmp-*/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+
+# Editors and IDEs
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local tooling
+.direnv/
+.mise.local.toml
