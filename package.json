@@ -1,0 +1,10 @@
+{
+  "name": "agent-ready-stack-skills",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Pi skills for making software systems agent-ready",
+  "keywords": ["pi-package", "agent-skills", "architecture", "migration"],
+  "pi": {
+    "skills": ["./skills"]
+  }
+}
