@@ -45,3 +45,20 @@ node --version
 npm --version
 air -v
 """
+
+[tasks.db]
+description = "Start a local Postgres container for development"
+run = """
+docker start canvas-postgres 2>/dev/null || docker run --detach --name canvas-postgres \
+  --publish 127.0.0.1:5432:5432 \
+  --env POSTGRES_USER=canvas --env POSTGRES_PASSWORD=canvas --env POSTGRES_DB=canvas \
+  postgres:18-alpine
+"""
+
+[tasks."db:stop"]
+description = "Stop the local Postgres container"
+run = "docker stop canvas-postgres"
+
+[tasks.tunnel]
+description = "Expose the local server through an ngrok tunnel"
+run = "ngrok http ${PORT:-8080}"

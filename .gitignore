@@ -1,5 +1,6 @@
 # Go
 /bin/
+/canvas
 *.exe
 *.exe~
 *.dll
@@ -70,3 +71,6 @@ mise.local.toml
 
 # Downloaded reference documentation
 /docs/mantine/llms.txt
+
+# Playwright MCP scratch output
+.playwright-mcp/

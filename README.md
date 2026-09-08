@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It currently contains only an application shell; no editor, artifact preview, or collaboration connection is implemented.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, and a shared-notes textarea backed by a Yjs document; no editor or artifact preview is implemented.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -44,7 +44,46 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. Yjs is installed but is not wired into React.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc` and its relay connection, and `useSharedText`, which mirrors a `Y.Text` into React state.
+
+`mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
+
+## Collaboration relay
+
+`/api/sync/{room}` is a WebSocket endpoint speaking the y-websocket protocol. The room name comes from the first path segment of the page URL, so `/notes` and `/sketches` are separate documents and `/` is the `default` room.
+
+The server does not interpret document contents. It keeps an append-only log of Yjs updates per room, replays that log to each joining client, and broadcasts every new update to the room's other clients. Yjs updates are idempotent and commutative, so replaying the log reconstructs the document. Awareness (presence) frames are relayed but never stored.
+
+```
+client                                  server
+  |  <-- sync step 1 (empty vector) ------|   asks for state the client already has
+  |  --- sync step 1 (state vector) ----->|
+  |  <-- sync step 2 (each logged update) |   replayed history
+  |  <-- sync step 2 (empty update) ------|   marks the client synced
+  |  <-> update / awareness ------------->|   relayed to the other clients
+```
+
+The log is unbounded: rooms grow with every keystroke and are never compacted. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
+
+## Persistence
+
+Update logs are stored in Postgres in a single `room_updates` table, created on startup if missing. Set `DATABASE_URL` to enable it; without it the server keeps history in memory only and rooms are lost on restart.
+
+```sh
+mise run db       # start a local Postgres container on 127.0.0.1:5432
+mise run db:stop  # stop it
+export DATABASE_URL='postgres://canvas:canvas@127.0.0.1:5432/canvas?sslmode=disable'
+```
+
+`mise run test` skips the Postgres store test unless `DATABASE_URL` is set; every other test uses the in-memory store.
+
+## Sharing a local server with ngrok
+
+```sh
+mise run tunnel   # ngrok http 8080; set PORT to expose a different port
+```
+
+The client derives its WebSocket scheme from the page, so the relay works over a tunnel's HTTPS origin without configuration. The server checks the `Origin` header against the request host and additionally allows `*.ngrok-free.dev`, `*.ngrok-free.app`, `*.ngrok.app`, and `*.ngrok.io`. Set `ORIGINS` (comma separated) to allow a different set. Keep `ADDR` on loopback; ngrok connects from the same machine.
 
 ## Go server and deep links
 
@@ -55,6 +94,8 @@ mise run serve         # watch, rebuild, and serve at http://127.0.0.1:8080
 mise run test          # build frontend and run Go routing tests
 mise run build:server  # produce bin/canvas with frontend embedded
 ```
+
+The Go module depends on chi for routing, `coder/websocket` for the relay, and pgx for Postgres.
 
 Set `ADDR` to override the listening address, for example `ADDR=127.0.0.1:9090 mise run serve`. Bind to `0.0.0.0:8080` only when you intend to expose the server beyond localhost.
 
