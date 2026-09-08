@@ -123,12 +123,14 @@ Authentication is username and password through `github.com/cccteam/session`, ba
 mise run createuser alice hunter2hunter2
 ```
 
+That leaves the password in shell history and in `ps` output, which is acceptable for bootstrapping a development database and not for anything else.
+
 Endpoints live under `/api/session`: `GET` reports who you are, `POST` signs in, `DELETE` signs out. Set `COOKIE_KEY` to base64 of at least 32 random bytes (`head -c 32 /dev/urandom | base64`); leave it unset and the session package generates one at startup and prints it, which invalidates every session on restart.
 
 Three things about this integration are easy to trip over:
 
 - **The process is pinned to UTC** in `main.go`. Session rows are `timestamp without time zone`: the store writes local wall-clock time and reads it back as UTC. Run it anywhere but UTC without that line and every session looks hours old, so logins succeed and then immediately report as unauthenticated.
-- **Development builds need `-tags insecurecookie`.** Without it session cookies are marked `Secure` and never survive a plain-http localhost login. `mise run serve` and `mise run dev:server` set it; `mise run build:server` deliberately does not, so a deployed binary keeps secure cookies.
+- **Development builds need `-tags insecurecookie`.** Without it session cookies are marked `Secure` and never survive a plain-http localhost login. `mise run serve` and `mise run dev:server` set it and write `bin/canvas-dev`; `mise run build:server` deliberately does not, so the deployable `bin/canvas` keeps secure cookies. The development build also works behind the HTTPS tunnel, which is the combination most likely to be running: its cookies are `SameSite=Strict` and simply omit `Secure`, which a browser accepts over HTTPS.
 - **The dependency is not free.** Adding the session package takes the server binary from 19 MB to 58 MB, because its storage layer links the Spanner client and gRPC even though this app only ever uses the Postgres path.
 
 Authenticated routes are grouped as `StartSession` → `SetXSRFToken`, then `ValidateSession` and `ValidateXSRFToken` for anything that writes. Sign-in cannot sit behind session validation, since there is no session yet. The XSRF token round-trips as a cookie the client copies into the `X-XSRF-TOKEN` header; the app calls `GET /api/session` at startup so the cookie exists before the first write, avoiding a redirect that would re-send the request body.

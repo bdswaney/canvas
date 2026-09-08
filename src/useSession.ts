@@ -42,7 +42,12 @@ export function useSession(): SessionState {
   }, [session?.authenticated, refresh]);
 
   const signOut = useCallback(async () => {
-    await endSession();
+    try {
+      await endSession();
+    } catch {
+      // A refused sign-out usually means the session is already gone; either
+      // way the next check settles it, so never leave the button dead.
+    }
     await refresh();
   }, [refresh]);
 

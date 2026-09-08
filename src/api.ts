@@ -18,14 +18,28 @@ function readCookie(name: string): string | null {
  * GET /api/session once at startup to make sure the cookie exists.
  */
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers);
   const method = (init.method ?? 'GET').toUpperCase();
-  if (method !== 'GET' && method !== 'HEAD') {
-    const token = readCookie(xsrfCookieName);
-    if (token) headers.set(xsrfHeaderName, token);
-    headers.set('Content-Type', 'application/json');
+  const send = () => {
+    const headers = new Headers(init.headers);
+    if (method !== 'GET' && method !== 'HEAD') {
+      const token = readCookie(xsrfCookieName);
+      if (token) headers.set(xsrfHeaderName, token);
+      headers.set('Content-Type', 'application/json');
+    }
+    // Refusing to follow redirects is deliberate: a write with no XSRF cookie
+    // is answered with a 307, and fetch would replay the whole body.
+    return fetch(path, { ...init, headers, credentials: 'same-origin', redirect: 'error' });
+  };
+
+  try {
+    return await send();
+  } catch (failure) {
+    if (method === 'GET' || method === 'HEAD') throw failure;
+    // The XSRF cookie lapsed. Reissue it and try the write once more, rather
+    // than leaving the caller with an opaque network error.
+    await fetch('/api/session', { credentials: 'same-origin' });
+    return send();
   }
-  return fetch(path, { ...init, headers, credentials: 'same-origin', redirect: 'error' });
 }
 
 // The server reports failures as {message, traceID}; fall back to the status.

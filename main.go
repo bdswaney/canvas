@@ -29,13 +29,13 @@ var frontend embed.FS
 // be allowed explicitly. Override with ORIGINS (comma separated).
 var defaultOrigins = []string{"*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.app", "*.ngrok.io"}
 
-func main() {
-	// Session rows are timestamp-without-time-zone: the session store writes
-	// wall-clock local time and reads it back as UTC. Anywhere but UTC that
-	// skew makes every session look hours old and instantly expired, so pin
-	// the process to UTC before anything reads a clock.
-	time.Local = time.UTC
+// Session rows are timestamp-without-time-zone: the session store writes
+// wall-clock local time and reads it back as UTC. Anywhere but UTC that skew
+// makes every session look hours old and instantly expired. This is an init so
+// the test binary is pinned too, not only the server.
+func init() { time.Local = time.UTC }
 
+func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
