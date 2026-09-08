@@ -1,0 +1,24 @@
+/* Mantine's Typography styles cover prose; these are the GFM extras it does
+   not know about, plus the trims that let the preview line up with the
+   editor beside it. */
+.preview {
+  overflow-x: auto;
+}
+
+.preview > :first-child {
+  margin-top: 0;
+}
+
+/* A task list item already shows a checkbox, so the bullet is noise. */
+.preview li:has(> input[type='checkbox']) {
+  list-style: none;
+  margin-left: -1.2rem;
+}
+
+.preview input[type='checkbox'] {
+  margin-right: 0.4rem;
+}
+
+.preview table {
+  width: 100%;
+}

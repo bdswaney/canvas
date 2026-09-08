@@ -1,10 +1,23 @@
 import { useRef } from 'react';
-import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title, useComputedColorScheme } from '@mantine/core';
+import {
+  AppShell,
+  Badge,
+  Container,
+  Divider,
+  Group,
+  Paper,
+  SimpleGrid,
+  Stack,
+  Text,
+  Title,
+  useComputedColorScheme,
+} from '@mantine/core';
 import { ColorSchemeToggle } from './ColorSchemeToggle';
 import { Cursors } from './Cursors';
 import { Editor } from './Editor';
+import { Preview } from './Preview';
 import { usePresence } from './presence';
-import { useSharedText, useSync, type Status } from './sync';
+import { useSharedText, useSync, useTextSnapshot, type Status } from './sync';
 
 const statusColors: Record<Status, string> = {
   connected: 'green',
@@ -15,6 +28,7 @@ const statusColors: Record<Status, string> = {
 export function App() {
   const { doc, awareness, room, status, synced, peers } = useSync();
   const notes = useSharedText(doc, 'notes');
+  const rendered = useTextSnapshot(notes);
   // Pointer positions are relative to this element, so every client agrees on
   // where a pointer is regardless of window size.
   const surface = useRef<HTMLDivElement>(null);
@@ -35,7 +49,7 @@ export function App() {
         </Group>
       </AppShell.Header>
       <AppShell.Main>
-        <Container size="md" py="xl">
+        <Container size="xl" py="xl">
           <Paper withBorder p="xl" radius="md" pos="relative" ref={surface}>
             <Cursors peers={present} />
             <Stack>
@@ -45,7 +59,20 @@ export function App() {
                 is shared: the text, each other's carets and selections, and the
                 pointers moving over this panel.
               </Text>
-              <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} />
+              {/* Source and preview sit side by side on wide screens and
+                  stack on narrow ones. */}
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl">
+                <Stack gap="xs">
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Markdown</Text>
+                  <Divider />
+                  <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} />
+                </Stack>
+                <Stack gap="xs">
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Preview</Text>
+                  <Divider />
+                  <Preview text={rendered} />
+                </Stack>
+              </SimpleGrid>
             </Stack>
           </Paper>
         </Container>

@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document; no artifact preview is implemented.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document, with a rendered preview beside it.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -44,7 +44,7 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, and `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
@@ -78,6 +78,14 @@ The app starts on `auto`, following the system, and the header toggle sets a sch
 The editor follows along. Its own colors come from Mantine's CSS variables, and the Markdown highlight style has a light and a dark variant, each scoped with `themeType` so exactly one matches — an unscoped style applies to both schemes and wins on precedence, which is easy to miss because the light scheme still looks right. Toggling reconfigures the theme through a CodeMirror compartment rather than rebuilding the editor, so the document, selection, and peers' carets stay put.
 
 Peer colors are mid tones that read on either background, and remote selections use a translucent tint of the peer's color instead of a pastel: a peer publishes one color to viewers on both schemes.
+
+## Preview
+
+`src/Preview.tsx` renders the shared Markdown through remark, beside the editor on wide screens and below it on narrow ones. `remark-gfm` keeps the preview reading the same dialect the editor highlights, so tables, task lists, strikethrough, and autolinks mean the same thing on both sides. Note that this is a second parser: the editor highlights with Lezer's incremental grammar, and the preview parses the whole document with remark. They agree on GFM by configuration, not by construction.
+
+The document is written by one person and rendered in everyone else's browser, so it is treated as untrusted. Raw HTML in the source is never parsed (`rehype-raw` is deliberately not installed, so a `<script>` tag renders as nothing at all), `rehype-sanitize` drops anything outside its allowed schema, and react-markdown rejects `javascript:`, `data:`, and `vbscript:` URLs, leaving the link text with no `href`.
+
+Rendering is driven by `useTextSnapshot`, which mirrors the `Y.Text` into React state on a trailing 150 ms debounce, so a burst of keystrokes — local or from a peer — costs one parse rather than one per character.
 
 ## Presence and cursors
 

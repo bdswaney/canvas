@@ -71,3 +71,32 @@ export function useSharedText(doc: Y.Doc, name: string): Y.Text {
   const [text] = useState(() => doc.getText(name));
   return text;
 }
+
+/**
+ * useTextSnapshot mirrors a Y.Text into React state for readers that want the
+ * whole string, such as the preview. Updates are trailing-debounced: a
+ * keystroke, or a burst of them from a peer, costs one re-render and one
+ * parse rather than one per change.
+ */
+export function useTextSnapshot(text: Y.Text, delay = 150): string {
+  const [snapshot, setSnapshot] = useState(() => text.toString());
+
+  useEffect(() => {
+    setSnapshot(text.toString());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        setSnapshot(text.toString());
+      }, delay);
+    };
+    text.observe(observer);
+    return () => {
+      text.unobserve(observer);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [delay, text]);
+
+  return snapshot;
+}
