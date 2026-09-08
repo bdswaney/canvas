@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, live peer pointers, and a CodeMirror 6 editor bound to a Yjs document; no artifact preview is implemented.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, live peer pointers, and a collaborative Markdown editor bound to a Yjs document; no artifact preview is implemented.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -44,7 +44,7 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, and `src/Editor.tsx` binds a `Y.Text` to CodeMirror.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, and `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
@@ -68,6 +68,8 @@ The log is unbounded: rooms grow with every keystroke and are never compacted. M
 ## Editing and carets
 
 `src/Editor.tsx` binds a `Y.Text` to CodeMirror 6 through `y-codemirror.next`, which handles character-level synchronization in both directions and draws every peer's caret and selection in the color that peer publishes. Undo is scoped to each client's own edits with a `Y.UndoManager`, so undo never reverts someone else's typing.
+
+`src/markdown.ts` adds Markdown parsing and the editing commands that come with it: Enter continues a list or blockquote, and Backspace at the start of an item removes the marker. Styling leans on weight and size rather than color, and dims the `#`, `*`, and `` ` `` markers so they stop competing with the text. The document is Markdown source, not a rendered preview; rendering is still out of scope.
 
 ## Presence and cursors
 

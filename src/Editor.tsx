@@ -5,6 +5,7 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, keymap, lineNumbers, placeholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { yCollab } from 'y-codemirror.next';
+import { markdownSupport } from './markdown';
 
 const theme = EditorView.theme({
   '&': { fontSize: '14px', backgroundColor: 'transparent' },
@@ -15,9 +16,10 @@ const theme = EditorView.theme({
 });
 
 /**
- * Editor binds a Y.Text to CodeMirror. yCollab handles the character-level
- * sync in both directions and draws every other client's caret and selection
- * using the color each of them publishes on the awareness channel.
+ * Editor binds a Y.Text to CodeMirror, editing Markdown. yCollab handles the
+ * character-level
+ * sync in both directions and draws every other client's caret and
+ * selection using the color each of them publishes on the awareness channel.
  */
 export function Editor({ text, awareness }: { text: Y.Text; awareness: Awareness }) {
   const host = useRef<HTMLDivElement>(null);
@@ -36,8 +38,9 @@ export function Editor({ text, awareness }: { text: Y.Text; awareness: Awareness
           lineNumbers(),
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
-          placeholder('Start typing. Everyone in this room sees it as you type.'),
+          placeholder('Start typing Markdown. Everyone in this room sees it as you type.'),
           EditorView.lineWrapping,
+          markdownSupport(),
           theme,
           yCollab(text, awareness, { undoManager }),
         ],
