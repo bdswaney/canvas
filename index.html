@@ -3,8 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#ffffff" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#242424" />
     <title>Canvas</title>
+    <script>
+      // Apply the stored color scheme before React mounts, so a page load does
+      // not flash the wrong one. Mirrors Mantine's ColorSchemeScript, which is
+      // meant for server rendering; the key and attribute are Mantine's.
+      try {
+        var stored = window.localStorage.getItem('mantine-color-scheme-value');
+        var scheme = stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'auto';
+        var computed =
+          scheme !== 'auto'
+            ? scheme
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light';
+        document.documentElement.setAttribute('data-mantine-color-scheme', computed);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

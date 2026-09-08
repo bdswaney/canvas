@@ -1,5 +1,6 @@
 import { useRef } from 'react';
-import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title } from '@mantine/core';
+import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title, useComputedColorScheme } from '@mantine/core';
+import { ColorSchemeToggle } from './ColorSchemeToggle';
 import { Cursors } from './Cursors';
 import { Editor } from './Editor';
 import { usePresence } from './presence';
@@ -18,6 +19,7 @@ export function App() {
   // where a pointer is regardless of window size.
   const surface = useRef<HTMLDivElement>(null);
   const present = usePresence(awareness, surface);
+  const scheme = useComputedColorScheme('light');
 
   return (
     <AppShell header={{ height: 64 }} padding="md">
@@ -28,6 +30,7 @@ export function App() {
             <Badge variant="light" color={statusColors[status]}>{status}</Badge>
             <Badge variant="light">{synced ? 'synced' : 'syncing'}</Badge>
             <Badge variant="light">{peers} connected</Badge>
+            <ColorSchemeToggle />
           </Group>
         </Group>
       </AppShell.Header>
@@ -42,7 +45,7 @@ export function App() {
                 is shared: the text, each other's carets and selections, and the
                 pointers moving over this panel.
               </Text>
-              <Editor text={notes} awareness={awareness} />
+              <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} />
             </Stack>
           </Paper>
         </Container>

@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, live peer pointers, and a collaborative Markdown editor bound to a Yjs document; no artifact preview is implemented.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document; no artifact preview is implemented.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -70,6 +70,14 @@ The log is unbounded: rooms grow with every keystroke and are never compacted. M
 `src/Editor.tsx` binds a `Y.Text` to CodeMirror 6 through `y-codemirror.next`, which handles character-level synchronization in both directions and draws every peer's caret and selection in the color that peer publishes. Undo is scoped to each client's own edits with a `Y.UndoManager`, so undo never reverts someone else's typing.
 
 `src/markdown.ts` adds Markdown parsing and the editing commands that come with it: Enter continues a list or blockquote, and Backspace at the start of an item removes the marker. Styling leans on weight and size rather than color, and dims the `#`, `*`, and `` ` `` markers so they stop competing with the text. The document is Markdown source, not a rendered preview; rendering is still out of scope.
+
+## Color scheme
+
+The app starts on `auto`, following the system, and the header toggle sets a scheme explicitly; Mantine remembers the choice. An inline script in `index.html` applies the stored scheme before React mounts so a reload does not flash the wrong one — Mantine ships that script for server rendering only, so this repeats its logic against the same storage key.
+
+The editor follows along. Its own colors come from Mantine's CSS variables, and the Markdown highlight style has a light and a dark variant, each scoped with `themeType` so exactly one matches — an unscoped style applies to both schemes and wins on precedence, which is easy to miss because the light scheme still looks right. Toggling reconfigures the theme through a CodeMirror compartment rather than rebuilding the editor, so the document, selection, and peers' carets stay put.
+
+Peer colors are mid tones that read on either background, and remote selections use a translucent tint of the peer's color instead of a pastel: a peer publishes one color to viewers on both schemes.
 
 ## Presence and cursors
 

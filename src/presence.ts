@@ -2,17 +2,24 @@ import { useEffect, useState, type RefObject } from 'react';
 import { removeAwarenessStates, type Awareness } from 'y-protocols/awareness';
 
 // Peers are told apart by color first and name second, so the palette is
-// spread around the hue circle and kept dark enough for white label text.
+// spread around the hue circle. Every entry is a mid tone: dark enough to
+// carry white label text, light enough to stay visible on a dark background.
 const palette = [
-  { color: '#e8590c', colorLight: '#ffe8cc' },
-  { color: '#c2255c', colorLight: '#ffdeeb' },
-  { color: '#7048e8', colorLight: '#e5dbff' },
-  { color: '#1c7ed6', colorLight: '#d0ebff' },
-  { color: '#0ca678', colorLight: '#c3fae8' },
-  { color: '#5c940d', colorLight: '#e9fac8' },
-  { color: '#f08c00', colorLight: '#fff3bf' },
-  { color: '#495057', colorLight: '#e9ecef' },
+  '#f76707',
+  '#e64980',
+  '#ae3ec9',
+  '#7048e8',
+  '#1c7ed6',
+  '#0c8599',
+  '#099268',
+  '#66a80f',
 ];
+
+// Selections are drawn in a translucent tint of the peer's color rather than
+// a pastel, so a peer's highlight reads on whichever scheme the viewer uses.
+function tint(color: string): string {
+  return `${color}55`;
+}
 
 const adjectives = ['Amber', 'Brisk', 'Candid', 'Dapper', 'Eager', 'Fluent', 'Gentle', 'Humble'];
 const animals = ['Otter', 'Heron', 'Lynx', 'Marten', 'Puffin', 'Raven', 'Seal', 'Tapir'];
@@ -29,11 +36,11 @@ export type Peer = { clientID: number; user: User; pointer: Pointer | null };
 const identityKey = 'canvas.identity';
 
 function randomIdentity(): User {
-  const swatch = palette[Math.floor(Math.random() * palette.length)];
+  const color = palette[Math.floor(Math.random() * palette.length)];
   const name = `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${
     animals[Math.floor(Math.random() * animals.length)]
   }`;
-  return { name, ...swatch };
+  return { name, color, colorLight: tint(color) };
 }
 
 // identity is remembered per browser so a reload keeps the same name and
@@ -43,7 +50,11 @@ export function loadIdentity(): User {
     const stored = localStorage.getItem(identityKey);
     if (stored) {
       const user = JSON.parse(stored) as Partial<User>;
-      if (user.name && user.color && user.colorLight) return user as User;
+      // colorLight is always derived, which also upgrades identities stored
+      // before selections switched to a translucent tint.
+      if (user.name && user.color) {
+        return { name: user.name, color: user.color, colorLight: tint(user.color) };
+      }
     }
   } catch {
     // Private windows and blocked storage fall back to a fresh identity.
