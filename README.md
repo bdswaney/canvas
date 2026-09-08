@@ -44,7 +44,7 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc` and its relay connection, and `useSharedText`, which mirrors a `Y.Text` into React state.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which mirrors a `Y.Text` into React state. `src/presence.ts` and `src/Cursors.tsx` add live pointers.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
@@ -64,6 +64,12 @@ client                                  server
 ```
 
 The log is unbounded: rooms grow with every keystroke and are never compacted. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
+
+## Presence and cursors
+
+Every client publishes an identity (a generated name and color, remembered in `localStorage`) and its pointer position on the awareness channel. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
+
+A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
 
 ## Persistence
 

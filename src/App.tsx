@@ -1,7 +1,8 @@
+import { useRef } from 'react';
 import { AppShell, Badge, Container, Group, Paper, Stack, Text, Textarea, Title } from '@mantine/core';
-import { useSharedText, useSync } from './sync';
-
-import type { Status } from './sync';
+import { Cursors } from './Cursors';
+import { usePresence } from './presence';
+import { useSharedText, useSync, type Status } from './sync';
 
 const statusColors: Record<Status, string> = {
   connected: 'green',
@@ -10,8 +11,12 @@ const statusColors: Record<Status, string> = {
 };
 
 export function App() {
-  const { doc, room, status, synced, peers } = useSync();
+  const { doc, awareness, room, status, synced, peers } = useSync();
   const [notes, setNotes] = useSharedText(doc, 'notes');
+  // Cursor positions are relative to this element, so every client agrees on
+  // where a pointer is regardless of window size.
+  const surface = useRef<HTMLDivElement>(null);
+  const present = usePresence(awareness, surface);
 
   return (
     <AppShell header={{ height: 64 }} padding="md">
@@ -27,13 +32,14 @@ export function App() {
       </AppShell.Header>
       <AppShell.Main>
         <Container size="md" py="xl">
-          <Paper withBorder p="xl" radius="md">
+          <Paper withBorder p="xl" radius="md" pos="relative" ref={surface}>
+            <Cursors peers={present} />
             <Stack>
               <Title order={1}>Room: {room}</Title>
               <Text c="dimmed">
                 Shared state is live. Open this page in another tab, or over the
-                tunnel, and edits below converge through the relay. Editing and
-                previews come later.
+                tunnel, and edits below converge through the relay. Pointers are
+                shared too: move your mouse over this panel.
               </Text>
               <Textarea
                 label="Shared notes"

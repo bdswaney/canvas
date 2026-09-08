@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
 import { WebsocketProvider } from 'y-websocket';
 
 // The relay lives behind the same origin as the app, so a tunnel that
@@ -20,6 +21,7 @@ export type Status = 'connecting' | 'connected' | 'disconnected';
 
 export type Connection = {
   doc: Y.Doc;
+  awareness: Awareness;
   room: string;
   status: Status;
   synced: boolean;
@@ -30,6 +32,9 @@ export type Connection = {
 // lifetime, and re-renders on connection, sync, and presence changes.
 export function useSync(room: string = roomName()): Connection {
   const [doc] = useState(() => new Y.Doc());
+  // Awareness outlives any single provider, so presence state set by the UI
+  // survives a reconnect and StrictMode's double mount.
+  const [awareness] = useState(() => new Awareness(doc));
   const [status, setStatus] = useState<Status>('connecting');
   const [synced, setSynced] = useState(false);
   const [peers, setPeers] = useState(1);
@@ -38,27 +43,27 @@ export function useSync(room: string = roomName()): Connection {
   // double mount tears its socket down and opens a fresh one, instead of
   // leaving the component holding a destroyed provider.
   useEffect(() => {
-    const provider = new WebsocketProvider(relayURL(), room, doc);
+    const provider = new WebsocketProvider(relayURL(), room, doc, { awareness });
     const onStatus = (event: { status: Status }) => setStatus(event.status);
     const onSync = (isSynced: boolean) => setSynced(isSynced);
-    const onAwareness = () => setPeers(provider.awareness.getStates().size);
+    const onAwareness = () => setPeers(awareness.getStates().size);
 
     provider.on('status', onStatus);
     provider.on('sync', onSync);
-    provider.awareness.on('change', onAwareness);
+    awareness.on('change', onAwareness);
 
     return () => {
       provider.off('status', onStatus);
       provider.off('sync', onSync);
-      provider.awareness.off('change', onAwareness);
+      awareness.off('change', onAwareness);
       provider.destroy();
       setStatus('connecting');
       setSynced(false);
       setPeers(1);
     };
-  }, [doc, room]);
+  }, [awareness, doc, room]);
 
-  return { doc, room, status, synced, peers };
+  return { doc, awareness, room, status, synced, peers };
 }
 
 // useSharedText mirrors a Y.Text into React state and writes edits back.
