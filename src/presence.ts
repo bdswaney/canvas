@@ -19,11 +19,12 @@ const animals = ['Otter', 'Heron', 'Lynx', 'Marten', 'Puffin', 'Raven', 'Seal', 
 
 export type User = { name: string; color: string; colorLight: string };
 
-// Cursor coordinates are fractions of the shared surface, not pixels, so a
-// pointer lands in the same place on a differently sized window.
-export type Cursor = { x: number; y: number };
+// Pointer coordinates are fractions of the shared surface, not pixels, so a
+// pointer lands in the same place on a differently sized window. The field is
+// named "pointer" because y-codemirror.next owns "cursor" for text selections.
+export type Pointer = { x: number; y: number };
 
-export type Peer = { clientID: number; user: User; cursor: Cursor | null };
+export type Peer = { clientID: number; user: User; pointer: Pointer | null };
 
 const identityKey = 'canvas.identity';
 
@@ -62,7 +63,7 @@ function readPeers(awareness: Awareness): Peer[] {
     if (clientID === awareness.clientID) return;
     const user = state.user as User | undefined;
     if (!user?.name) return;
-    peers.push({ clientID, user, cursor: (state.cursor as Cursor | undefined) ?? null });
+    peers.push({ clientID, user, pointer: (state.pointer as Pointer | undefined) ?? null });
   });
   // A stable order keeps React from reshuffling the cursor nodes.
   return peers.sort((a, b) => a.clientID - b.clientID);
@@ -85,7 +86,7 @@ export function usePresence(awareness: Awareness, surface: RefObject<HTMLElement
   }, [awareness, user]);
 
   useEffect(() => {
-    let pending: Cursor | null = null;
+    let pending: Pointer | null = null;
     let frame = 0;
     let published = false;
 
@@ -93,11 +94,11 @@ export function usePresence(awareness: Awareness, surface: RefObject<HTMLElement
     // published position is a network message: coalesce them per frame.
     const flush = () => {
       frame = 0;
-      awareness.setLocalStateField('cursor', pending);
+      awareness.setLocalStateField('pointer', pending);
       published = pending !== null;
     };
-    const schedule = (cursor: Cursor | null) => {
-      pending = cursor;
+    const schedule = (pointer: Pointer | null) => {
+      pending = pointer;
       if (frame === 0) frame = requestAnimationFrame(flush);
     };
 
@@ -129,8 +130,8 @@ export function usePresence(awareness: Awareness, surface: RefObject<HTMLElement
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('pagehide', onUnload);
       if (frame !== 0) cancelAnimationFrame(frame);
-      // Leave no stale cursor behind for the peers still in the room.
-      if (published) awareness.setLocalStateField('cursor', null);
+      // Leave no stale pointer behind for the peers still in the room.
+      if (published) awareness.setLocalStateField('pointer', null);
     };
   }, [awareness, surface]);
 

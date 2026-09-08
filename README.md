@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, and a shared-notes textarea backed by a Yjs document; no editor or artifact preview is implemented.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, live peer pointers, and a CodeMirror 6 editor bound to a Yjs document; no artifact preview is implemented.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -44,7 +44,7 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which mirrors a `Y.Text` into React state. `src/presence.ts` and `src/Cursors.tsx` add live pointers.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, and `src/Editor.tsx` binds a `Y.Text` to CodeMirror.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
@@ -65,9 +65,13 @@ client                                  server
 
 The log is unbounded: rooms grow with every keystroke and are never compacted. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
 
+## Editing and carets
+
+`src/Editor.tsx` binds a `Y.Text` to CodeMirror 6 through `y-codemirror.next`, which handles character-level synchronization in both directions and draws every peer's caret and selection in the color that peer publishes. Undo is scoped to each client's own edits with a `Y.UndoManager`, so undo never reverts someone else's typing.
+
 ## Presence and cursors
 
-Every client publishes an identity (a generated name and color, remembered in `localStorage`) and its pointer position on the awareness channel. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
+Every client publishes an identity (a generated name and color, remembered in `localStorage`) and its pointer position on the awareness channel. Pointers use a `pointer` field because `y-codemirror.next` owns `cursor` for text selections. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
 
 A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
 

@@ -66,27 +66,8 @@ export function useSync(room: string = roomName()): Connection {
   return { doc, awareness, room, status, synced, peers };
 }
 
-// useSharedText mirrors a Y.Text into React state and writes edits back.
-export function useSharedText(doc: Y.Doc, name: string) {
+// useSharedDoc hands out one named shared type for the document's lifetime.
+export function useSharedDoc(doc: Y.Doc, name: string): Y.Text {
   const [text] = useState(() => doc.getText(name));
-  const [value, setValue] = useState(() => text.toString());
-
-  useEffect(() => {
-    const observer = () => setValue(text.toString());
-    text.observe(observer);
-    observer();
-    return () => text.unobserve(observer);
-  }, [text]);
-
-  // Replace the whole contents in one transaction. Character-level diffing
-  // arrives with the editor; this keeps the demo honest about being a
-  // last-write-wins textarea.
-  const replace = (next: string) => {
-    doc.transact(() => {
-      text.delete(0, text.length);
-      text.insert(0, next);
-    });
-  };
-
-  return [value, replace] as const;
+  return text;
 }

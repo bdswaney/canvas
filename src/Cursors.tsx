@@ -27,14 +27,14 @@ export function Cursors({ peers }: { peers: Peer[] }) {
   return (
     <div style={overlayStyle} aria-hidden>
       {peers.map((peer) =>
-        peer.cursor === null ? null : (
+        peer.pointer === null ? null : (
           <div
             key={peer.clientID}
             style={{
               position: 'absolute',
-              left: `${peer.cursor.x * 100}%`,
-              top: `${peer.cursor.y * 100}%`,
-              // Cursors move in discrete awareness updates; a short
+              left: `${peer.pointer.x * 100}%`,
+              top: `${peer.pointer.y * 100}%`,
+              // Pointers move in discrete awareness updates; a short
               // transition reads as motion rather than teleporting.
               transition: 'left 80ms linear, top 80ms linear',
             }}

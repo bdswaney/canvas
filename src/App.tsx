@@ -1,8 +1,9 @@
 import { useRef } from 'react';
-import { AppShell, Badge, Container, Group, Paper, Stack, Text, Textarea, Title } from '@mantine/core';
+import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title } from '@mantine/core';
 import { Cursors } from './Cursors';
+import { Editor } from './Editor';
 import { usePresence } from './presence';
-import { useSharedText, useSync, type Status } from './sync';
+import { useSharedDoc, useSync, type Status } from './sync';
 
 const statusColors: Record<Status, string> = {
   connected: 'green',
@@ -12,8 +13,8 @@ const statusColors: Record<Status, string> = {
 
 export function App() {
   const { doc, awareness, room, status, synced, peers } = useSync();
-  const [notes, setNotes] = useSharedText(doc, 'notes');
-  // Cursor positions are relative to this element, so every client agrees on
+  const notes = useSharedDoc(doc, 'notes');
+  // Pointer positions are relative to this element, so every client agrees on
   // where a pointer is regardless of window size.
   const surface = useRef<HTMLDivElement>(null);
   const present = usePresence(awareness, surface);
@@ -37,18 +38,11 @@ export function App() {
             <Stack>
               <Title order={1}>Room: {room}</Title>
               <Text c="dimmed">
-                Shared state is live. Open this page in another tab, or over the
-                tunnel, and edits below converge through the relay. Pointers are
-                shared too: move your mouse over this panel.
+                Open this page in another tab, or over the tunnel, and everything
+                is shared: the text, each other's carets and selections, and the
+                pointers moving over this panel.
               </Text>
-              <Textarea
-                label="Shared notes"
-                description="Backed by a Yjs document and replayed from the server log on join."
-                minRows={8}
-                autosize
-                value={notes}
-                onChange={(event) => setNotes(event.currentTarget.value)}
-              />
+              <Editor text={notes} awareness={awareness} />
             </Stack>
           </Paper>
         </Container>
