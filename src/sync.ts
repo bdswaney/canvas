@@ -66,8 +66,8 @@ export function useSync(room: string = roomName()): Connection {
   return { doc, awareness, room, status, synced, peers };
 }
 
-// useSharedDoc hands out one named shared type for the document's lifetime.
-export function useSharedDoc(doc: Y.Doc, name: string): Y.Text {
+// useSharedText hands out one named Y.Text for the document's lifetime.
+export function useSharedText(doc: Y.Doc, name: string): Y.Text {
   const [text] = useState(() => doc.getText(name));
   return text;
 }

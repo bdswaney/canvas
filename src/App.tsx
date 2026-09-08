@@ -3,7 +3,7 @@ import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title } from '@m
 import { Cursors } from './Cursors';
 import { Editor } from './Editor';
 import { usePresence } from './presence';
-import { useSharedDoc, useSync, type Status } from './sync';
+import { useSharedText, useSync, type Status } from './sync';
 
 const statusColors: Record<Status, string> = {
   connected: 'green',
@@ -13,7 +13,7 @@ const statusColors: Record<Status, string> = {
 
 export function App() {
   const { doc, awareness, room, status, synced, peers } = useSync();
-  const notes = useSharedDoc(doc, 'notes');
+  const notes = useSharedText(doc, 'notes');
   // Pointer positions are relative to this element, so every client agrees on
   // where a pointer is regardless of window size.
   const surface = useRef<HTMLDivElement>(null);
