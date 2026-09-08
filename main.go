@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -29,20 +30,50 @@ var frontend embed.FS
 var defaultOrigins = []string{"*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.app", "*.ngrok.io"}
 
 func main() {
+	// Session rows are timestamp-without-time-zone: the session store writes
+	// wall-clock local time and reads it back as UTC. Anywhere but UTC that
+	// skew makes every session look hours old and instantly expired, so pin
+	// the process to UTC before anything reads a clock.
+	time.Local = time.UTC
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	store, err := openStore(ctx)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DATABASE_URL is required: accounts and room history live in Postgres")
+	}
+	if err := migrateDatabase(databaseURL); err != nil {
+		log.Fatal(err)
+	}
+
+	connect, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
+	store, err := NewPostgresStore(connect, databaseURL)
+	cancelConnect()
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
 
+	auth, err := newPasswordAuth(store.Pool(), os.Getenv("COOKIE_KEY"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// canvas createuser <username> <password> makes the first account, which
+	// cannot come through the API because that route requires a session.
+	if len(os.Args) > 1 {
+		if err := runCommand(ctx, auth, os.Args[1:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+
 	assets, err := fs.Sub(frontend, "dist")
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(store), origins())
+	handler, err := newHandler(assets, newHub(store), origins(), auth)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -71,22 +102,26 @@ func main() {
 	}
 }
 
-// openStore uses Postgres when DATABASE_URL is set and otherwise keeps the
-// update log in memory, which is fine for a throwaway development run.
-func openStore(ctx context.Context) (Store, error) {
-	url := os.Getenv("DATABASE_URL")
-	if url == "" {
-		log.Print("DATABASE_URL is not set; keeping room history in memory only")
-		return NewMemoryStore(), nil
+// runCommand handles the few one-shot administrative commands. Anything that
+// needs a running server does not belong here.
+func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
+	switch args[0] {
+	case "migrate":
+		// Migrations already ran before this switch; nothing left to do.
+		log.Print("Migrations are up to date")
+		return nil
+	case "createuser":
+		if len(args) != 3 {
+			return errors.New("usage: canvas createuser <username> <password>")
+		}
+		if err := auth.createUser(ctx, args[1], args[2]); err != nil {
+			return err
+		}
+		log.Printf("Created user %s", args[1])
+		return nil
+	default:
+		return fmt.Errorf("unknown command %q", args[0])
 	}
-	connect, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	store, err := NewPostgresStore(connect, url)
-	if err != nil {
-		return nil, err
-	}
-	log.Print("Room history persisted to Postgres")
-	return store, nil
 }
 
 func origins() []string {
@@ -105,7 +140,7 @@ func origins() []string {
 
 func roomName(r *http.Request) string { return chi.URLParam(r, "room") }
 
-func newHandler(assets fs.FS, h *hub, originPatterns []string) (http.Handler, error) {
+func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticator) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read frontend entry point: %w", err)
@@ -114,7 +149,28 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string) (http.Handler, er
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
 	router.Route("/api", func(api chi.Router) {
-		api.Get("/sync/{room}", h.syncHandler(originPatterns))
+		// Every API route needs the session cookie read and an XSRF token
+		// issued; SetXSRFToken depends on StartSession having run.
+		api.Use(auth.StartSession)
+		api.Use(auth.SetXSRFToken)
+
+		api.Route("/session", func(r chi.Router) {
+			// Login cannot sit behind ValidateSession: there is no session
+			// yet. GET reports who you are and doubles as the call that
+			// primes the XSRF cookie and keeps a session alive while someone
+			// is editing over a WebSocket and making no other requests.
+			r.Get("/", auth.Authenticated())
+			r.Post("/", auth.Login())
+			// Signing out changes state, so it carries the XSRF check that
+			// every future write endpoint will use.
+			r.With(auth.ValidateSession, auth.ValidateXSRFToken).Delete("/", auth.Logout())
+		})
+
+		// Collaboration sockets: authenticated, but no XSRF check. A browser
+		// cannot set headers on a WebSocket handshake. What protects this is
+		// the session cookie being SameSite=Strict, so a cross-site handshake
+		// carries no cookie at all, with the Origin check behind it.
+		api.Get("/sync/{room}", h.syncHandler(originPatterns, auth))
 	})
 	// Unrouted paths are client-side routes, static files, or genuine 404s.
 	spa := serveApp(assets, index)

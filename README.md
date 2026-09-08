@@ -34,7 +34,7 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 
 ## Frontend
 
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document, with a rendered preview beside it.
+The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains a sign-in screen, an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document, with a rendered preview beside it.
 
 ```sh
 mise run deps       # install dependencies from package-lock.json
@@ -44,7 +44,7 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedDoc`, which hands out a named shared type. `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which hands out a named `Y.Text`. `src/api.ts` and `src/useSession.ts` handle sign-in and keep the session alive, `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
@@ -89,21 +89,59 @@ Rendering is driven by `useTextSnapshot`, which mirrors the `Y.Text` into React 
 
 ## Presence and cursors
 
-Every client publishes an identity (a generated name and color, remembered in `localStorage`) and its pointer position on the awareness channel. Pointers use a `pointer` field because `y-codemirror.next` owns `cursor` for text selections. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
+Every client publishes an identity and its pointer position on the awareness channel. The identity is the signed-in username, with a color derived from it by hashing, so a person looks the same to everyone on every device with nothing to keep in sync. Pointers use a `pointer` field because `y-codemirror.next` owns `cursor` for text selections. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
 
 A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
 
 ## Persistence
 
-Update logs are stored in Postgres in a single `room_updates` table, created on startup if missing. Set `DATABASE_URL` to enable it; without it the server keeps history in memory only and rooms are lost on restart.
+Update logs are stored in Postgres in a single `room_updates` table. `DATABASE_URL` is required: accounts and room history both live there.
 
 ```sh
 mise run db       # start a local Postgres container on 127.0.0.1:5432
 mise run db:stop  # stop it
 export DATABASE_URL='postgres://canvas:canvas@127.0.0.1:5432/canvas?sslmode=disable'
+mise run migrate  # apply migrations (the server also does this at startup)
 ```
 
-`mise run test` skips the Postgres store test unless `DATABASE_URL` is set; every other test uses the in-memory store.
+`mise run test` skips the Postgres store test unless `DATABASE_URL` is set; every other test uses the in-memory store, which is kept for exactly that reason.
+
+## Migrations
+
+Schema lives in `migrations/`, embedded in the binary and applied at startup with golang-migrate. There are two independent sets, each with its own migrations table, so they can be numbered independently:
+
+- `migrations/app` (`schema_migrations`) — this application's tables.
+- `migrations/session` (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
+
+`SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The development container is already `postgres:18-alpine`; check any other deployment target before the first migration runs.
+
+## Accounts and sessions
+
+Authentication is username and password through `github.com/cccteam/session`, backed by the same Postgres pool as everything else. The HTTP route that creates users is itself behind authentication, so the first account is made from the command line:
+
+```sh
+mise run createuser alice hunter2hunter2
+```
+
+Endpoints live under `/api/session`: `GET` reports who you are, `POST` signs in, `DELETE` signs out. Set `COOKIE_KEY` to base64 of at least 32 random bytes (`head -c 32 /dev/urandom | base64`); leave it unset and the session package generates one at startup and prints it, which invalidates every session on restart.
+
+Three things about this integration are easy to trip over:
+
+- **The process is pinned to UTC** in `main.go`. Session rows are `timestamp without time zone`: the store writes local wall-clock time and reads it back as UTC. Run it anywhere but UTC without that line and every session looks hours old, so logins succeed and then immediately report as unauthenticated.
+- **Development builds need `-tags insecurecookie`.** Without it session cookies are marked `Secure` and never survive a plain-http localhost login. `mise run serve` and `mise run dev:server` set it; `mise run build:server` deliberately does not, so a deployed binary keeps secure cookies.
+- **The dependency is not free.** Adding the session package takes the server binary from 19 MB to 58 MB, because its storage layer links the Spanner client and gRPC even though this app only ever uses the Postgres path.
+
+Authenticated routes are grouped as `StartSession` → `SetXSRFToken`, then `ValidateSession` and `ValidateXSRFToken` for anything that writes. Sign-in cannot sit behind session validation, since there is no session yet. The XSRF token round-trips as a cookie the client copies into the `X-XSRF-TOKEN` header; the app calls `GET /api/session` at startup so the cookie exists before the first write, avoiding a redirect that would re-send the request body.
+
+## Authenticating the collaboration socket
+
+The WebSocket route is authenticated but carries no XSRF check, because a browser cannot set headers on a WebSocket handshake. What protects it is the session cookie being `SameSite=Strict`, so a cross-site handshake arrives with no cookie at all; the `Origin` check sits behind that.
+
+The session is checked *after* the upgrade, and a socket without one is closed with code **4401**. y-websocket treats 4400-4499 as permanent and stops reconnecting; a rejected handshake would instead look like a network failure and be retried forever. The client listens for that code and returns to the login screen.
+
+Sessions expire after ten minutes without an HTTP request, and only HTTP requests refresh them — someone typing over a WebSocket makes none. The client therefore polls `GET /api/session` every two minutes, and whenever a tab becomes visible again.
+
+One known gap: the session is validated when the socket opens, not continuously. Signing out elsewhere does not close sockets that are already connected; they keep working until they reconnect.
 
 ## Sharing a local server with ngrok
 
@@ -112,6 +150,8 @@ mise run tunnel   # ngrok http 8080; set PORT to expose a different port
 ```
 
 The client derives its WebSocket scheme from the page, so the relay works over a tunnel's HTTPS origin without configuration. The server checks the `Origin` header against the request host and additionally allows `*.ngrok-free.dev`, `*.ngrok-free.app`, `*.ngrok.app`, and `*.ngrok.io`. Set `ORIGINS` (comma separated) to allow a different set. Keep `ADDR` on loopback; ngrok connects from the same machine.
+
+Those ngrok defaults are a development convenience and must not ship to a deployment: they let a page on any ngrok subdomain open a handshake. Set `ORIGINS` explicitly there.
 
 ## Go server and deep links
 

@@ -27,6 +27,10 @@ const (
 )
 
 const (
+	// y-websocket treats close codes in 4400-4499 as permanent and stops
+	// reconnecting, which is what an expired session should mean.
+	statusUnauthenticated = 4401
+
 	// A joining client replays the whole room log, so allow generous frames.
 	readLimit = 32 << 20
 	// Slow clients are disconnected rather than allowed to stall a broadcast.
@@ -175,7 +179,7 @@ func syncFrame(subType uint64, payload []byte) []byte {
 }
 
 // syncHandler serves the collaboration socket for one room.
-func (h *hub) syncHandler(originPatterns []string) http.HandlerFunc {
+func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := roomName(r)
 		if !roomNamePattern.MatchString(name) {
@@ -190,6 +194,15 @@ func (h *hub) syncHandler(originPatterns []string) http.HandlerFunc {
 		}
 		conn.SetReadLimit(readLimit)
 		defer conn.CloseNow()
+
+		// The session is checked after the upgrade rather than by middleware
+		// so that an expired session closes the socket with a code the client
+		// treats as final. A rejected handshake looks like a network failure,
+		// and y-websocket would reconnect against it forever.
+		if err := auth.ValidateSessionCtx(r.Context()); err != nil {
+			conn.Close(statusUnauthenticated, "session expired")
+			return
+		}
 
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()

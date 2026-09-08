@@ -15,7 +15,12 @@ import (
 // testRelay starts the server and returns a dialer for one of its rooms.
 func testRelay(t *testing.T, store Store) func(t *testing.T, room string) *websocket.Conn {
 	t.Helper()
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(store), nil)
+	return testRelayWithAuth(t, store, stubAuth{valid: true})
+}
+
+func testRelayWithAuth(t *testing.T, store Store, auth authenticator) func(t *testing.T, room string) *websocket.Conn {
+	t.Helper()
+	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(store), nil, auth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +159,7 @@ func TestAwarenessIsRelayedButNotStored(t *testing.T) {
 }
 
 func TestInvalidRoomName(t *testing.T) {
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(NewMemoryStore()), nil)
+	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,5 +174,28 @@ func TestInvalidRoomName(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != 400 {
 		t.Fatalf("status = %v, want 400", resp)
+	}
+}
+
+// An expired session must close the socket with a code y-websocket treats as
+// permanent, rather than leaving the client to reconnect forever.
+func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
+	dial := testRelayWithAuth(t, NewMemoryStore(), stubAuth{valid: false})
+	conn := dial(t, "private")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _, err := conn.Read(ctx)
+	if got := websocket.CloseStatus(err); got != statusUnauthenticated {
+		t.Fatalf("close status = %d (%v), want %d", got, err, statusUnauthenticated)
+	}
+}
+
+// A valid session still gets the normal handshake.
+func TestAuthenticatedSocketHandshakes(t *testing.T) {
+	dial := testRelayWithAuth(t, NewMemoryStore(), stubAuth{valid: true})
+	conn := dial(t, "private")
+	if payload := expectSync(t, conn, syncStep1); !bytes.Equal(payload, emptyStateVector) {
+		t.Errorf("state vector = % x, want % x", payload, emptyStateVector)
 	}
 }

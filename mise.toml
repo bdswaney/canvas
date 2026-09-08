@@ -62,3 +62,16 @@ run = "docker stop canvas-postgres"
 [tasks.tunnel]
 description = "Expose the local server through an ngrok tunnel"
 run = "ngrok http ${PORT:-8080}"
+
+[tasks.migrate]
+description = "Apply database migrations"
+run = "go run . migrate"
+
+[tasks.createuser]
+description = "Create a login (usage: mise run createuser <username> <password>)"
+run = "go run . createuser"
+
+[tasks."dev:server"]
+description = "Build and run the server for local http development"
+depends = ["build"]
+run = "go build -tags insecurecookie -o bin/canvas . && ./bin/canvas"

@@ -43,16 +43,6 @@ func (s *MemoryStore) Load(_ context.Context, room string) ([][]byte, error) {
 
 func (s *MemoryStore) Close() {}
 
-const schema = `
-CREATE TABLE IF NOT EXISTS room_updates (
-	id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-	room   text NOT NULL,
-	update bytea NOT NULL,
-	added  timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS room_updates_room_id_idx ON room_updates (room, id);
-`
-
 // PostgresStore persists the update log so rooms survive a restart.
 type PostgresStore struct {
 	pool *pgxpool.Pool
@@ -63,10 +53,8 @@ func NewPostgresStore(ctx context.Context, url string) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect to postgres: %w", err)
 	}
-	if _, err := pool.Exec(ctx, schema); err != nil {
-		pool.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
+	// The schema is owned by the migrations in migrations/, applied before
+	// the pool is opened.
 	return &PostgresStore{pool: pool}, nil
 }
 
@@ -96,3 +84,7 @@ func (s *PostgresStore) Load(ctx context.Context, room string) ([][]byte, error)
 }
 
 func (s *PostgresStore) Close() { s.pool.Close() }
+
+// Pool exposes the connection pool so other subsystems, notably session
+// storage, can share this one connection pool.
+func (s *PostgresStore) Pool() *pgxpool.Pool { return s.pool }

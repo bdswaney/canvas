@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from 'react';
+import { useEffect, useMemo, useState, type RefObject } from 'react';
 import { removeAwarenessStates, type Awareness } from 'y-protocols/awareness';
 
 // Peers are told apart by color first and name second, so the palette is
@@ -21,9 +21,6 @@ function tint(color: string): string {
   return `${color}55`;
 }
 
-const adjectives = ['Amber', 'Brisk', 'Candid', 'Dapper', 'Eager', 'Fluent', 'Gentle', 'Humble'];
-const animals = ['Otter', 'Heron', 'Lynx', 'Marten', 'Puffin', 'Raven', 'Seal', 'Tapir'];
-
 export type User = { name: string; color: string; colorLight: string };
 
 // Pointer coordinates are fractions of the shared surface, not pixels, so a
@@ -33,39 +30,19 @@ export type Pointer = { x: number; y: number };
 
 export type Peer = { clientID: number; user: User; pointer: Pointer | null };
 
-const identityKey = 'canvas.identity';
-
-function randomIdentity(): User {
-  const color = palette[Math.floor(Math.random() * palette.length)];
-  const name = `${adjectives[Math.floor(Math.random() * adjectives.length)]} ${
-    animals[Math.floor(Math.random() * animals.length)]
-  }`;
-  return { name, color, colorLight: tint(color) };
+// A person's color is derived from their name rather than stored, so they
+// look the same to everyone, on every device, with nothing to keep in sync.
+function paletteIndex(username: string): number {
+  let hash = 0;
+  for (let i = 0; i < username.length; i += 1) {
+    hash = (hash * 31 + username.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash) % palette.length;
 }
 
-// identity is remembered per browser so a reload keeps the same name and
-// color for everyone watching.
-export function loadIdentity(): User {
-  try {
-    const stored = localStorage.getItem(identityKey);
-    if (stored) {
-      const user = JSON.parse(stored) as Partial<User>;
-      // colorLight is always derived, which also upgrades identities stored
-      // before selections switched to a translucent tint.
-      if (user.name && user.color) {
-        return { name: user.name, color: user.color, colorLight: tint(user.color) };
-      }
-    }
-  } catch {
-    // Private windows and blocked storage fall back to a fresh identity.
-  }
-  const user = randomIdentity();
-  try {
-    localStorage.setItem(identityKey, JSON.stringify(user));
-  } catch {
-    // Not being able to remember the identity is not worth failing over.
-  }
-  return user;
+export function identityFor(username: string): User {
+  const color = palette[paletteIndex(username)];
+  return { name: username, color, colorLight: tint(color) };
 }
 
 function readPeers(awareness: Awareness): Peer[] {
@@ -84,8 +61,12 @@ function readPeers(awareness: Awareness): Peer[] {
  * usePresence publishes this client's identity and pointer position on the
  * awareness channel and returns the other clients in the room.
  */
-export function usePresence(awareness: Awareness, surface: RefObject<HTMLElement | null>): Peer[] {
-  const [user] = useState(loadIdentity);
+export function usePresence(
+  awareness: Awareness,
+  surface: RefObject<HTMLElement | null>,
+  username: string,
+): Peer[] {
+  const user = useMemo(() => identityFor(username), [username]);
   const [peers, setPeers] = useState<Peer[]>([]);
 
   useEffect(() => {

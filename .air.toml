@@ -3,7 +3,9 @@ tmp_dir = ".tmp"
 
 [build]
 # Rebuild Vite before Go embeds dist/. Generated output is excluded below.
-cmd = "npm run build && go build -o ./.tmp/canvas ."
+# insecurecookie is a development-only build tag: without it the session
+# cookies are marked Secure and a plain-http localhost login cannot work.
+cmd = "npm run build && go build -tags insecurecookie -o ./.tmp/canvas ."
 entrypoint = ["./.tmp/canvas"]
 delay = 500
 include_ext = ["go", "mod", "sum", "ts", "tsx", "js", "jsx", "json", "html", "css"]
