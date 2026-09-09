@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/auth/authtest"
+	"github.com/bdswaney/canvas/internal/lib0"
+	"github.com/bdswaney/canvas/internal/store"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -15,26 +19,26 @@ import (
 // testRelay starts the server and hands out sockets for documents created on
 // demand, so each test names its documents rather than juggling ids.
 type testRelay struct {
-	store Store
+	store store.Store
 	url   string
 	ids   map[string]string
 }
 
-func newTestRelay(t *testing.T, store Store) *testRelay {
+func newTestRelay(t *testing.T, st store.Store) *testRelay {
 	t.Helper()
-	return newTestRelayWithAuth(t, store, stubAuth{valid: true})
+	return newTestRelayWithAuth(t, st, authtest.Stub{Valid: true})
 }
 
-func newTestRelayWithAuth(t *testing.T, store Store, auth authenticator) *testRelay {
+func newTestRelayWithAuth(t *testing.T, st store.Store, authn auth.Authenticator) *testRelay {
 	t.Helper()
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(store), nil, auth)
+	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(st), nil, authn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	return &testRelay{
-		store: store,
+		store: st,
 		url:   "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sync/doc/",
 		ids:   map[string]string{},
 	}
@@ -46,7 +50,7 @@ func (r *testRelay) docID(t *testing.T, name string) string {
 	if id, ok := r.ids[name]; ok {
 		return id
 	}
-	doc, err := r.store.CreateDoc(context.Background(), defaultProjectID, name)
+	doc, err := r.store.CreateDoc(context.Background(), store.DefaultProjectID, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,16 +99,16 @@ func write(t *testing.T, conn *websocket.Conn, frame []byte) {
 // returns its payload.
 func expectSync(t *testing.T, conn *websocket.Conn, subType uint64) []byte {
 	t.Helper()
-	r := &reader{buf: read(t, conn)}
-	messageType, err := r.varUint()
+	r := lib0.NewReader(read(t, conn))
+	messageType, err := r.VarUint()
 	if err != nil || messageType != messageSync {
 		t.Fatalf("message type = %d, %v; want sync", messageType, err)
 	}
-	got, err := r.varUint()
+	got, err := r.VarUint()
 	if err != nil || got != subType {
 		t.Fatalf("sync sub-type = %d, %v; want %d", got, err, subType)
 	}
-	payload, err := r.varBytes()
+	payload, err := r.VarBytes()
 	if err != nil {
 		t.Fatalf("payload: %v", err)
 	}
@@ -154,8 +158,8 @@ func TestUpdateReachesOtherClients(t *testing.T) {
 // A client answers the server's step 1 with a step 2 carrying state it
 // already had. That state must be logged, not just relayed.
 func TestStep2FromClientIsPersisted(t *testing.T) {
-	store := newTestStore(t)
-	relay := newTestRelay(t, store)
+	st := newTestStore(t)
+	relay := newTestRelay(t, st)
 	first := relay.dial(t, "restored")
 	expectSync(t, first, syncStep1)
 
@@ -165,31 +169,31 @@ func TestStep2FromClientIsPersisted(t *testing.T) {
 	write(t, first, syncFrame(syncStep1, emptyStateVector))
 	expectSync(t, first, syncStep2)
 
-	updates, err := store.Load(context.Background(), relay.docID(t, "restored"))
+	updates, err := st.Load(context.Background(), relay.docID(t, "restored"))
 	if err != nil || len(updates) != 1 || !bytes.Equal(updates[0], existing) {
 		t.Fatalf("stored %v, %v; want one copy of % x", updates, err, existing)
 	}
 }
 
 func TestAwarenessIsRelayedButNotStored(t *testing.T) {
-	store := newTestStore(t)
-	relay := newTestRelay(t, store)
+	st := newTestStore(t)
+	relay := newTestRelay(t, st)
 	sender, receiver := relay.dial(t, "presence"), relay.dial(t, "presence")
 	expectSync(t, sender, syncStep1)
 	expectSync(t, receiver, syncStep1)
 
-	awareness := appendVarBytes(appendVarUint(nil, messageAwareness), []byte{0x07})
+	awareness := lib0.AppendVarBytes(lib0.AppendVarUint(nil, messageAwareness), []byte{0x07})
 	write(t, sender, awareness)
 	if frame := read(t, receiver); !bytes.Equal(frame, awareness) {
 		t.Errorf("relayed % x, want % x", frame, awareness)
 	}
-	if updates, err := store.Load(context.Background(), relay.docID(t, "presence")); err != nil || len(updates) != 0 {
+	if updates, err := st.Load(context.Background(), relay.docID(t, "presence")); err != nil || len(updates) != 0 {
 		t.Errorf("awareness was stored: %v, %v", updates, err)
 	}
 }
 
 func TestInvalidDocID(t *testing.T) {
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(newTestStore(t)), nil, stubAuth{valid: true})
+	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(newTestStore(t)), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +214,7 @@ func TestInvalidDocID(t *testing.T) {
 // An expired session must close the socket with a code y-websocket treats as
 // permanent, rather than leaving the client to reconnect forever.
 func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
-	relay := newTestRelayWithAuth(t, newTestStore(t), stubAuth{valid: false})
+	relay := newTestRelayWithAuth(t, newTestStore(t), authtest.Stub{Valid: false})
 	conn := relay.dialID(t, "00000000-0000-4000-8000-000000000099")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -223,7 +227,7 @@ func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
 
 // A valid session still gets the normal handshake.
 func TestAuthenticatedSocketHandshakes(t *testing.T) {
-	relay := newTestRelayWithAuth(t, newTestStore(t), stubAuth{valid: true})
+	relay := newTestRelayWithAuth(t, newTestStore(t), authtest.Stub{Valid: true})
 	conn := relay.dial(t, "private")
 	if payload := expectSync(t, conn, syncStep1); !bytes.Equal(payload, emptyStateVector) {
 		t.Errorf("state vector = % x, want % x", payload, emptyStateVector)

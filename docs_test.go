@@ -5,17 +5,19 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/bdswaney/canvas/internal/auth/authtest"
+	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"testing/fstest"
 )
 
-func newDocAPI(t *testing.T, store Store) http.Handler {
+func newDocAPI(t *testing.T, st store.Store) http.Handler {
 	t.Helper()
 	handler, err := newHandler(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		newHub(store), nil, stubAuth{valid: true},
+		newHub(st), nil, authtest.Stub{Valid: true},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +58,7 @@ func TestSaveCreatesVersions(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create = %d: %s", created.Code, created.Body)
 	}
-	doc := decode[Doc](t, created)
+	doc := decode[store.Doc](t, created)
 
 	snapshot := base64.StdEncoding.EncodeToString([]byte{0x01, 0x02})
 	for i, artifact := range []string{"# One", "# Two"} {
@@ -83,18 +85,18 @@ func TestSaveCreatesVersions(t *testing.T) {
 
 	// The doc now reports the hash of what was saved, which is what a client
 	// compares against to decide whether it holds unsaved changes.
-	fetched := decode[Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil))
+	fetched := decode[store.Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil))
 	latest := sha256.Sum256([]byte("# Two"))
 	if fetched.CurrentVersion != 2 || !bytes.Equal(fetched.SavedSHA256, latest[:]) {
 		t.Errorf("doc = %+v, want version 2 and the last artifact's hash", fetched)
 	}
 
-	versions := decode[[]Version](t, do(t, handler, "GET", "/api/docs/"+doc.ID+"/versions", nil))
+	versions := decode[[]store.Version](t, do(t, handler, "GET", "/api/docs/"+doc.ID+"/versions", nil))
 	if len(versions) != 2 {
 		t.Fatalf("versions = %d, want 2", len(versions))
 	}
 	// Authorship is stored as the session user's id, never the username.
-	user, _ := stubAuth{valid: true}.UserFromCtx(t.Context())
+	user, _ := authtest.Stub{Valid: true}.UserFromCtx(t.Context())
 	if versions[0].AuthorID != user.ID {
 		t.Errorf("author id = %q, want %q", versions[0].AuthorID, user.ID)
 	}
@@ -113,9 +115,9 @@ func TestSaveCreatesVersions(t *testing.T) {
 }
 
 func TestSaveRejectsBadRequests(t *testing.T) {
-	store := newTestStore(t)
-	handler := newDocAPI(t, store)
-	doc := decode[Doc](t, do(t, handler, "POST", "/api/docs", map[string]string{"name": "Notes"}))
+	st := newTestStore(t)
+	handler := newDocAPI(t, st)
+	doc := decode[store.Doc](t, do(t, handler, "POST", "/api/docs", map[string]string{"name": "Notes"}))
 
 	for _, tt := range []struct {
 		name   string
@@ -138,7 +140,7 @@ func TestSaveRejectsBadRequests(t *testing.T) {
 	}
 
 	// A failed save must not consume a version number.
-	if fetched := decode[Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil)); fetched.CurrentVersion != 0 {
+	if fetched := decode[store.Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil)); fetched.CurrentVersion != 0 {
 		t.Errorf("current version = %d, want 0", fetched.CurrentVersion)
 	}
 }

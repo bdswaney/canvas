@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -10,8 +12,8 @@ import (
 // projectAPI serves projects and their membership. A project is the container
 // above a document and the boundary that decides who can reach one.
 type projectAPI struct {
-	store Store
-	auth  authenticator
+	store store.Store
+	auth  auth.Authenticator
 }
 
 func (a *projectAPI) projectRoutes(r chi.Router) {
@@ -54,16 +56,16 @@ func (a *projectAPI) allowed(w http.ResponseWriter, r *http.Request, projectID s
 }
 
 // listUsers backs the member picker. Every signed-in person can see it; see
-// authenticator.Users for why.
+// auth.Authenticator.Users for why.
 func (a *projectAPI) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := a.auth.Users(r.Context())
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	people := make([]Member, 0, len(users))
+	people := make([]store.Member, 0, len(users))
 	for _, user := range users {
-		people = append(people, Member{UserID: user.ID, Username: user.Username})
+		people = append(people, store.Member{UserID: user.ID, Username: user.Username})
 	}
 	writeJSON(w, http.StatusOK, people)
 }
@@ -76,7 +78,7 @@ func (a *projectAPI) listProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if projects == nil {
-		projects = []Project{}
+		projects = []store.Project{}
 	}
 	writeJSON(w, http.StatusOK, projects)
 }
@@ -132,7 +134,7 @@ func (a *projectAPI) listMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if members == nil {
-		members = []Member{}
+		members = []store.Member{}
 	}
 	writeJSON(w, http.StatusOK, members)
 }

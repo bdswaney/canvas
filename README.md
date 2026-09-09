@@ -174,10 +174,10 @@ mise run migrate  # apply migrations (the server also does this at startup)
 
 ## Migrations
 
-Schema lives in `migrations/`, embedded in the binary and applied at startup with golang-migrate. There are two independent sets, each with its own migrations table, so they can be numbered independently:
+Schema lives in `internal/migrate/migrations/`, embedded in the binary and applied at startup with golang-migrate. There are two independent sets, each with its own migrations table, so they can be numbered independently:
 
-- `migrations/app` (`schema_migrations`) — this application's tables.
-- `migrations/session` (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
+- `migrations/app` under it (`schema_migrations`) — this application's tables.
+- `migrations/session` under it (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
 
 The app set depends on the session set: `doc_versions.author_id` and `project_members.user_id` both reference `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
 

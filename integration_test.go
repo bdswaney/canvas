@@ -4,6 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/lib0"
+	"github.com/bdswaney/canvas/internal/migrate"
+	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -23,37 +27,37 @@ import (
 // user whatever the context holds, so every membership check passed in tests
 // while the running server refused every socket — the package's API form of
 // ValidateSession validates the session but, unlike its middleware, does not
-// attach the account. Nothing that mocks the authenticator can catch that.
+// attach the account. Nothing that mocks the auth.Authenticator can catch that.
 func TestRealSessionReachesTheSocket(t *testing.T) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
 		t.Skip("DATABASE_URL is not set")
 	}
-	if err := migrateDatabase(url); err != nil {
+	if err := migrate.Run(url); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	store, err := NewPostgresStore(ctx, url)
+	st, err := store.NewPostgresStore(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(store.Close)
+	t.Cleanup(st.Close)
 
-	auth, err := newPasswordAuth(store.Pool(), "")
+	authn, err := auth.NewPasswordAuth(st.Pool(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	stamp := time.Now().UnixNano()
 	username := fmt.Sprintf("socket-%d", stamp)
-	if err := auth.createUser(ctx, username, "correct horse battery staple"); err != nil {
+	if err := authn.CreateUser(ctx, username, "correct horse battery staple"); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { auth.deleteUser(context.Background(), username) })
+	t.Cleanup(func() { authn.DeleteUser(context.Background(), username) })
 
-	users, err := auth.Users(ctx)
+	users, err := authn.Users(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,21 +71,21 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 		t.Fatal("the account just created is not in the user list")
 	}
 
-	project, err := store.CreateProject(ctx, fmt.Sprintf("socket-%d", stamp), userID)
+	project, err := st.CreateProject(ctx, fmt.Sprintf("socket-%d", stamp), userID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		store.pool.Exec(context.Background(), "DELETE FROM projects WHERE id = $1::uuid", project.ID)
+		st.Pool().Exec(context.Background(), "DELETE FROM projects WHERE id = $1::uuid", project.ID)
 	})
-	doc, err := store.CreateDoc(ctx, project.ID, "Notes")
+	doc, err := st.CreateDoc(ctx, project.ID, "Notes")
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	handler, err := newHandler(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		newHub(store), nil, auth,
+		newHub(st), nil, authn,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +143,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 	if whoami.StatusCode != http.StatusOK {
 		t.Fatalf("reading the doc over REST = %d", whoami.StatusCode)
 	}
-	var got Doc
+	var got store.Doc
 	if err := json.NewDecoder(whoami.Body).Decode(&got); err != nil {
 		t.Fatal(err)
 	}
@@ -169,8 +173,8 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 	if kind != websocket.MessageBinary {
 		t.Fatalf("first frame is %v, want binary", kind)
 	}
-	r := &reader{buf: frame}
-	if messageType, err := r.varUint(); err != nil || messageType != messageSync {
+	r := lib0.NewReader(frame)
+	if messageType, err := r.VarUint(); err != nil || messageType != messageSync {
 		t.Fatalf("first frame type = %d, %v; want sync", messageType, err)
 	}
 }
