@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/golang-migrate/migrate/v4"
 	_ "github.com/golang-migrate/migrate/v4/database/pgx/v5"
@@ -26,9 +31,44 @@ var migrationSets = []struct {
 	{dir: "migrations/app", table: "schema_migrations"},
 }
 
+// minimumPostgres is a hard floor, not a preference: the session package's
+// "SessionUsers" table uses casefold(), which does not exist before
+// PostgreSQL 18. Checking here turns a confusing mid-migration syntax error
+// into one sentence at startup.
+const minimumPostgres = 18
+
+func checkPostgresVersion(ctx context.Context, databaseURL string) error {
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("connect to check the server version: %w", err)
+	}
+	defer conn.Close(ctx)
+
+	// SHOW returns text whatever the setting holds, so this parses rather
+	// than scanning straight into an int.
+	var raw string
+	if err := conn.QueryRow(ctx, "SHOW server_version_num").Scan(&raw); err != nil {
+		return fmt.Errorf("read the server version: %w", err)
+	}
+	version, err := strconv.Atoi(raw)
+	if err != nil {
+		return fmt.Errorf("parse the server version %q: %w", raw, err)
+	}
+	if major := version / 10000; major < minimumPostgres {
+		return fmt.Errorf("PostgreSQL %d or newer is required, this server is %d: "+
+			"the session schema uses casefold()", minimumPostgres, major)
+	}
+	return nil
+}
+
 // migrateDatabase brings every migration set up to date. It is safe to run on
 // every start: sets already at their newest version are no-ops.
 func migrateDatabase(databaseURL string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := checkPostgresVersion(ctx, databaseURL); err != nil {
+		return err
+	}
 	for _, set := range migrationSets {
 		if err := runMigrations(databaseURL, set.dir, set.table); err != nil {
 			return fmt.Errorf("migrate %s: %w", set.dir, err)
