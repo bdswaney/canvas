@@ -15,7 +15,7 @@ func TestFrontendRouting(t *testing.T) {
 	handler, err := newHandler(fstest.MapFS{
 		"index.html":    {Data: []byte(index)},
 		"assets/app.js": {Data: []byte(script)},
-	})
+	}, newHub(NewMemoryStore()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,6 +37,10 @@ func TestFrontendRouting(t *testing.T) {
 		{"GET", "/favicon.ico", 404, ""},
 		{"GET", "/api", 404, ""},
 		{"GET", "/api/artifacts", 404, ""},
+		// The sync route exists but rejects a non-WebSocket GET; it must never fall
+		// through to the app HTML.
+		{"GET", "/api/sync/demo", 426, ""},
+		{"POST", "/api/sync/demo", 405, ""},
 		{"POST", "/artifacts/123", 405, ""},
 	} {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
@@ -62,7 +66,7 @@ func TestFrontendRouting(t *testing.T) {
 }
 
 func TestMissingFrontendEntryPoint(t *testing.T) {
-	if _, err := newHandler(fstest.MapFS{}); err == nil {
+	if _, err := newHandler(fstest.MapFS{}, newHub(NewMemoryStore()), nil); err == nil {
 		t.Fatal("expected error for missing index.html")
 	}
 }
@@ -72,7 +76,7 @@ func TestEmbeddedFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := newHandler(assets)
+	handler, err := newHandler(assets, newHub(NewMemoryStore()), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,102 @@
+import { useEffect, useState } from 'react';
+import * as Y from 'yjs';
+import { Awareness } from 'y-protocols/awareness';
+import { WebsocketProvider } from 'y-websocket';
+
+// The relay lives behind the same origin as the app, so a tunnel that
+// terminates TLS keeps working: derive the scheme from the page.
+export function relayURL(location: Location = window.location): string {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${location.host}/api/sync`;
+}
+
+// Rooms are named by the first path segment, so /notes and /sketches are
+// separate documents and a bare / is the default room.
+export function roomName(pathname: string = window.location.pathname): string {
+  const segment = pathname.split('/').filter(Boolean)[0] ?? 'default';
+  return /^[A-Za-z0-9._-]{1,64}$/.test(segment) ? segment : 'default';
+}
+
+export type Status = 'connecting' | 'connected' | 'disconnected';
+
+export type Connection = {
+  doc: Y.Doc;
+  awareness: Awareness;
+  room: string;
+  status: Status;
+  synced: boolean;
+  peers: number;
+};
+
+// useSync owns one document and its relay connection for the component's
+// lifetime, and re-renders on connection, sync, and presence changes.
+export function useSync(room: string = roomName()): Connection {
+  const [doc] = useState(() => new Y.Doc());
+  // Awareness outlives any single provider, so presence state set by the UI
+  // survives a reconnect and StrictMode's double mount.
+  const [awareness] = useState(() => new Awareness(doc));
+  const [status, setStatus] = useState<Status>('connecting');
+  const [synced, setSynced] = useState(false);
+  const [peers, setPeers] = useState(1);
+
+  // The provider is created here rather than in state so that StrictMode's
+  // double mount tears its socket down and opens a fresh one, instead of
+  // leaving the component holding a destroyed provider.
+  useEffect(() => {
+    const provider = new WebsocketProvider(relayURL(), room, doc, { awareness });
+    const onStatus = (event: { status: Status }) => setStatus(event.status);
+    const onSync = (isSynced: boolean) => setSynced(isSynced);
+    const onAwareness = () => setPeers(awareness.getStates().size);
+
+    provider.on('status', onStatus);
+    provider.on('sync', onSync);
+    awareness.on('change', onAwareness);
+
+    return () => {
+      provider.off('status', onStatus);
+      provider.off('sync', onSync);
+      awareness.off('change', onAwareness);
+      provider.destroy();
+      setStatus('connecting');
+      setSynced(false);
+      setPeers(1);
+    };
+  }, [awareness, doc, room]);
+
+  return { doc, awareness, room, status, synced, peers };
+}
+
+// useSharedText hands out one named Y.Text for the document's lifetime.
+export function useSharedText(doc: Y.Doc, name: string): Y.Text {
+  const [text] = useState(() => doc.getText(name));
+  return text;
+}
+
+/**
+ * useTextSnapshot mirrors a Y.Text into React state for readers that want the
+ * whole string, such as the preview. Updates are trailing-debounced: a
+ * keystroke, or a burst of them from a peer, costs one re-render and one
+ * parse rather than one per change.
+ */
+export function useTextSnapshot(text: Y.Text, delay = 150): string {
+  const [snapshot, setSnapshot] = useState(() => text.toString());
+
+  useEffect(() => {
+    setSnapshot(text.toString());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const observer = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        setSnapshot(text.toString());
+      }, delay);
+    };
+    text.observe(observer);
+    return () => {
+      text.unobserve(observer);
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [delay, text]);
+
+  return snapshot;
+}

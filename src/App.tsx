@@ -1,23 +1,78 @@
-import { AppShell, Badge, Container, Group, Paper, Stack, Text, Title } from '@mantine/core';
+import { useRef } from 'react';
+import {
+  AppShell,
+  Badge,
+  Container,
+  Divider,
+  Group,
+  Paper,
+  SimpleGrid,
+  Stack,
+  Text,
+  Title,
+  useComputedColorScheme,
+} from '@mantine/core';
+import { ColorSchemeToggle } from './ColorSchemeToggle';
+import { Cursors } from './Cursors';
+import { Editor } from './Editor';
+import { Preview } from './Preview';
+import { usePresence } from './presence';
+import { useSharedText, useSync, useTextSnapshot, type Status } from './sync';
+
+const statusColors: Record<Status, string> = {
+  connected: 'green',
+  connecting: 'yellow',
+  disconnected: 'red',
+};
 
 export function App() {
+  const { doc, awareness, room, status, synced, peers } = useSync();
+  const notes = useSharedText(doc, 'notes');
+  const rendered = useTextSnapshot(notes);
+  // Pointer positions are relative to this element, so every client agrees on
+  // where a pointer is regardless of window size.
+  const surface = useRef<HTMLDivElement>(null);
+  const present = usePresence(awareness, surface);
+  const scheme = useComputedColorScheme('light');
+
   return (
     <AppShell header={{ height: 64 }} padding="md">
       <AppShell.Header>
         <Group h="100%" px="md" justify="space-between">
           <Text fw={700} size="xl">Canvas</Text>
-          <Badge variant="light">Development</Badge>
+          <Group gap="xs">
+            <Badge variant="light" color={statusColors[status]}>{status}</Badge>
+            <Badge variant="light">{synced ? 'synced' : 'syncing'}</Badge>
+            <Badge variant="light">{peers} connected</Badge>
+            <ColorSchemeToggle />
+          </Group>
         </Group>
       </AppShell.Header>
       <AppShell.Main>
-        <Container size="md" py="xl">
-          <Paper withBorder p="xl" radius="md">
+        <Container size="xl" py="xl">
+          <Paper withBorder p="xl" radius="md" pos="relative" ref={surface}>
+            <Cursors peers={present} />
             <Stack>
-              <Title order={1}>Collaborative artifact workspace</Title>
+              <Title order={1}>Room: {room}</Title>
               <Text c="dimmed">
-                React and Mantine are ready. Shared-state synchronization is the next
-                step; editing and previews will come later.
+                Open this page in another tab, or over the tunnel, and everything
+                is shared: the text, each other's carets and selections, and the
+                pointers moving over this panel.
               </Text>
+              {/* Source and preview sit side by side on wide screens and
+                  stack on narrow ones. */}
+              <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl">
+                <Stack gap="xs">
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Markdown</Text>
+                  <Divider />
+                  <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} />
+                </Stack>
+                <Stack gap="xs">
+                  <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Preview</Text>
+                  <Divider />
+                  <Preview text={rendered} />
+                </Stack>
+              </SimpleGrid>
             </Stack>
           </Paper>
         </Container>
