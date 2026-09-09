@@ -39,8 +39,8 @@ func TestFrontendRouting(t *testing.T) {
 		{"GET", "/api/artifacts", 404, ""},
 		// The sync route exists but rejects a non-WebSocket GET; it must never fall
 		// through to the app HTML.
-		{"GET", "/api/sync/demo", 426, ""},
-		{"POST", "/api/sync/demo", 405, ""},
+		{"GET", "/api/sync/doc/00000000-0000-4000-8000-000000000001", 426, ""},
+		{"POST", "/api/sync/doc/00000000-0000-4000-8000-000000000001", 405, ""},
 		{"POST", "/artifacts/123", 405, ""},
 		// Session endpoints exist and are not the app HTML.
 		{"GET", "/api/session", 200, `{"authenticated":true}`},

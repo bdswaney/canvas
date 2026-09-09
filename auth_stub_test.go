@@ -54,9 +54,16 @@ func (s stubAuth) Authenticated() http.HandlerFunc {
 	}
 }
 
-func (s stubAuth) ValidateSessionCtx(context.Context) error {
+func (s stubAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
 	if !s.valid {
-		return errors.New("session is not valid")
+		return ctx, errors.New("session is not valid")
 	}
-	return nil
+	return ctx, nil
+}
+
+func (s stubAuth) UserFromCtx(context.Context) (User, bool) {
+	if !s.valid {
+		return User{}, false
+	}
+	return User{ID: "00000000-0000-4000-8000-00000000000f", Username: "tester"}, true
 }

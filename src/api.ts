@@ -17,7 +17,7 @@ function readCookie(name: string): string | null {
  * that header is answered with a 307 that re-sends the body, so the app calls
  * GET /api/session once at startup to make sure the cookie exists.
  */
-async function request(path: string, init: RequestInit = {}): Promise<Response> {
+export async function apiRequest(path: string, init: RequestInit = {}): Promise<Response> {
   const method = (init.method ?? 'GET').toUpperCase();
   const send = () => {
     const headers = new Headers(init.headers);
@@ -54,13 +54,13 @@ async function errorMessage(response: Response): Promise<string> {
 }
 
 export async function fetchSession(): Promise<Session> {
-  const response = await request('/api/session');
+  const response = await apiRequest('/api/session');
   if (!response.ok) return { authenticated: false, username: '' };
   return (await response.json()) as Session;
 }
 
 export async function login(username: string, password: string): Promise<void> {
-  const response = await request('/api/session', {
+  const response = await apiRequest('/api/session', {
     method: 'POST',
     body: JSON.stringify({ username, password }),
   });
@@ -68,6 +68,6 @@ export async function login(username: string, password: string): Promise<void> {
 }
 
 export async function logout(): Promise<void> {
-  const response = await request('/api/session', { method: 'DELETE' });
+  const response = await apiRequest('/api/session', { method: 'DELETE' });
   if (!response.ok) throw new Error(await errorMessage(response));
 }

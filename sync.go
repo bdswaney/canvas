@@ -28,8 +28,10 @@ const (
 
 const (
 	// y-websocket treats close codes in 4400-4499 as permanent and stops
-	// reconnecting, which is what an expired session should mean.
+	// reconnecting, which is what an expired session or a missing document
+	// should mean.
 	statusUnauthenticated = 4401
+	statusUnknownDoc      = 4404
 
 	// A joining client replays the whole room log, so allow generous frames.
 	readLimit = 32 << 20
@@ -44,7 +46,7 @@ var (
 	emptyUpdate      = []byte{0x00, 0x00}
 )
 
-var roomNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var docIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 type client struct {
 	conn *websocket.Conn
@@ -178,12 +180,12 @@ func syncFrame(subType uint64, payload []byte) []byte {
 	return appendVarBytes(appendVarUint(appendVarUint(nil, messageSync), subType), payload)
 }
 
-// syncHandler serves the collaboration socket for one room.
+// syncHandler serves the collaboration socket for one document.
 func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := roomName(r)
-		if !roomNamePattern.MatchString(name) {
-			http.Error(w, "invalid room name", http.StatusBadRequest)
+		name := docID(r)
+		if !docIDPattern.MatchString(name) {
+			http.Error(w, "invalid document id", http.StatusBadRequest)
 			return
 		}
 		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: originPatterns})
@@ -199,8 +201,15 @@ func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.Hand
 		// so that an expired session closes the socket with a code the client
 		// treats as final. A rejected handshake looks like a network failure,
 		// and y-websocket would reconnect against it forever.
-		if err := auth.ValidateSessionCtx(r.Context()); err != nil {
+		if _, err := auth.ValidateSessionCtx(r.Context()); err != nil {
 			conn.Close(statusUnauthenticated, "session expired")
+			return
+		}
+
+		// A socket for a document that does not exist would otherwise create a
+		// room out of thin air and journal updates nothing can ever read.
+		if _, err := h.store.Doc(r.Context(), name); err != nil {
+			conn.Close(statusUnknownDoc, "unknown document")
 			return
 		}
 
