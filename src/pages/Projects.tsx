@@ -13,10 +13,10 @@ import {
   Title,
 } from '@mantine/core';
 import { IconPlus } from '@tabler/icons-react';
-import { Archive } from './Archive';
-import { Link } from './Link';
-import { projectPath } from './routes';
-import { archiveProject, createProject, listProjects, useRefetched, type Project } from './projects';
+import { Archive } from '../components/Archive';
+import { Link } from '../components/Link';
+import { projectPath } from '../app/routes';
+import { archiveProject, createProject, listProjects, useRefetched, type Project } from '../api/projects';
 
 // The top of the hierarchy: pick a project, then its documents.
 export function Projects({ onOpen }: { onOpen: (project: Project) => void }) {

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Anchor, AppShell, Burger, Center, Group, Loader, Text } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
-import { Login } from './Login';
+import { Login } from '../pages/Login';
 import { Navbar } from './Navbar';
-import { Project } from './Project';
-import { Projects } from './Projects';
-import { Workspace } from './Workspace';
+import { Project } from '../pages/Project';
+import { Projects } from '../pages/Projects';
+import { Workspace } from '../pages/Workspace';
 import { docPath, navigate, parseRoute, projectPath, projectsPath, type Route } from './routes';
-import { useSession } from './useSession';
+import { useSession } from '../api/session';
 
 function useRoute(): Route {
   const [route, setRoute] = useState(() => parseRoute());

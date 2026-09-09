@@ -1,5 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchSession, logout as endSession, type Session } from './api';
+import { apiRequest, errorMessage } from './client';
+
+export type Session = { authenticated: boolean; username: string };
+
+export async function fetchSession(): Promise<Session> {
+  const response = await apiRequest('/api/session');
+  if (!response.ok) return { authenticated: false, username: '' };
+  return (await response.json()) as Session;
+}
+
+export async function login(username: string, password: string): Promise<void> {
+  const response = await apiRequest('/api/session', {
+    method: 'POST',
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) throw new Error(await errorMessage(response));
+}
+
+export async function logout(): Promise<void> {
+  const response = await apiRequest('/api/session', { method: 'DELETE' });
+  if (!response.ok) throw new Error(await errorMessage(response));
+}
 
 // A session expires after ten minutes without an HTTP request, and it is
 // refreshed only by HTTP. Someone typing over a WebSocket makes no requests at
@@ -43,7 +64,7 @@ export function useSession(): SessionState {
 
   const signOut = useCallback(async () => {
     try {
-      await endSession();
+      await logout();
     } catch {
       // A refused sign-out usually means the session is already gone; either
       // way the next check settles it, so never leave the button dead.

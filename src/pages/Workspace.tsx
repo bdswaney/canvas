@@ -18,13 +18,13 @@ import {
   useComputedColorScheme,
 } from '@mantine/core';
 import * as Y from 'yjs';
-import { Cursors } from './Cursors';
-import { Editor } from './Editor';
-import { Preview } from './Preview';
-import { listVersions, restoreVersion, saveDoc, sha256Base64, useDoc, type Version } from './docs';
-import { usePresence } from './presence';
+import { Cursors } from '../collab/Cursors';
+import { Editor } from '../editor/Editor';
+import { Preview } from '../editor/Preview';
+import { listVersions, restoreVersion, saveDoc, sha256Base64, useDoc, type Version } from '../api/docs';
+import { usePresence } from '../collab/presence';
 import { IconArrowBackUp, IconDeviceFloppy, IconHistory } from '@tabler/icons-react';
-import { useSharedText, useSync, useTextSnapshot, type Status } from './sync';
+import { useSharedText, useSync, useTextSnapshot, type Status } from '../collab/sync';
 
 // sha256 of the empty string, base64. A document that has never been saved
 // has no stored hash, and an empty one has nothing to save.

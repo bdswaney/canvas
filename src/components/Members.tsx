@@ -8,7 +8,7 @@ import {
   removeMember,
   useRefetched,
   type Member,
-} from './projects';
+} from '../api/projects';
 
 /**
  * Members manages who can reach a project.

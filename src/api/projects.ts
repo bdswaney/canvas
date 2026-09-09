@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { apiRequest } from './api';
+import { apiRequest } from './client';
 
 export type Project = {
   id: string;

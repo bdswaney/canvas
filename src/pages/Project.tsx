@@ -12,11 +12,11 @@ import {
   TextInput,
   Title,
 } from '@mantine/core';
-import { createDoc, listDocs, type Doc } from './docs';
+import { createDoc, listDocs, type Doc } from '../api/docs';
 import { IconFileText, IconPlus } from '@tabler/icons-react';
-import { Archive } from './Archive';
-import { Members } from './Members';
-import { archiveDoc, useRefetched } from './projects';
+import { Archive } from '../components/Archive';
+import { Members } from '../components/Members';
+import { archiveDoc, useRefetched } from '../api/projects';
 
 // One project: the documents in it and the people who can reach them.
 export function Project({

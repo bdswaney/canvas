@@ -10,7 +10,7 @@ import {
   TextInput,
   Title,
 } from '@mantine/core';
-import { login } from './api';
+import { login } from '../api/session';
 
 export function Login({ onSignedIn }: { onSignedIn: () => Promise<void> }) {
   const [username, setUsername] = useState('');
