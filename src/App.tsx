@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActionIcon,
-  AppShell,
   Anchor,
+  AppShell,
   Center,
   Group,
   Loader,
@@ -10,31 +10,26 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { ColorSchemeToggle } from './ColorSchemeToggle';
-import { DocPicker } from './DocPicker';
 import { Login } from './Login';
+import { Project } from './Project';
+import { Projects } from './Projects';
 import { Workspace } from './Workspace';
-import { docIdFromPath } from './sync';
+import { docPath, navigate, parseRoute, projectPath, projectsPath, type Route } from './routes';
 import { useSession } from './useSession';
 
-// Client-side routing is one path shape — /doc/<id> — so it needs no router.
-function navigate(path: string) {
-  window.history.pushState({}, '', path);
-  window.dispatchEvent(new PopStateEvent('popstate'));
-}
-
-function usePath(): string {
-  const [path, setPath] = useState(window.location.pathname);
+function useRoute(): Route {
+  const [route, setRoute] = useState(() => parseRoute());
   useEffect(() => {
-    const onPop = () => setPath(window.location.pathname);
+    const onPop = () => setRoute(parseRoute());
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
-  return path;
+  return route;
 }
 
 export function App() {
   const { session, refresh, signOut } = useSession();
-  const path = usePath();
+  const route = useRoute();
 
   if (session === null) {
     return (
@@ -50,31 +45,48 @@ export function App() {
 
   return (
     <Shell username={session.username} signOut={signOut}>
-      <Routes path={path} username={session.username} onSignedOut={refresh} />
+      <Routes route={route} username={session.username} onSignedOut={refresh} />
     </Shell>
   );
 }
 
 function Routes({
-  path,
+  route,
   username,
   onSignedOut,
 }: {
-  path: string;
+  route: Route;
   username: string;
   onSignedOut: () => Promise<void>;
 }) {
   // The socket closes with a permanent code when the session lapses, so
   // re-check it rather than leaving the app looking merely disconnected.
   const handleSignedOut = useCallback(() => void onSignedOut(), [onSignedOut]);
-  const docID = docIdFromPath(path);
 
-  if (docID === null) {
-    return <DocPicker onOpen={(doc) => navigate(`/doc/${doc.id}`)} />;
+  switch (route.kind) {
+    case 'projects':
+      return <Projects onOpen={(project) => navigate(projectPath(project.id))} />;
+    case 'project':
+      return (
+        <Project
+          key={route.projectID}
+          projectID={route.projectID}
+          username={username}
+          onOpenDoc={(doc) => navigate(docPath(doc.id))}
+        />
+      );
+    case 'doc':
+      // Keyed on the id so switching documents builds a new socket and Y.Doc
+      // rather than mutating the open one.
+      return (
+        <Workspace
+          key={route.docID}
+          docID={route.docID}
+          username={username}
+          onSignedOut={handleSignedOut}
+        />
+      );
   }
-  // Keyed on the id so switching documents builds a new socket and Y.Doc
-  // rather than mutating the open one.
-  return <Workspace key={docID} docID={docID} username={username} onSignedOut={handleSignedOut} />;
 }
 
 function Shell({
@@ -95,16 +107,18 @@ function Shell({
             size="xl"
             underline="never"
             c="inherit"
-            href="/"
+            href={projectsPath()}
             onClick={(event) => {
               event.preventDefault();
-              navigate('/');
+              navigate(projectsPath());
             }}
           >
             Canvas
           </Anchor>
           <Group gap="xs">
-            <Text size="sm" c="dimmed">{username}</Text>
+            <Text size="sm" c="dimmed">
+              {username}
+            </Text>
             <ColorSchemeToggle />
             <Tooltip label="Sign out">
               <ActionIcon

@@ -41,7 +41,7 @@ func main() {
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
-		log.Fatal("DATABASE_URL is required: accounts and room history live in Postgres")
+		log.Fatal("DATABASE_URL is required: accounts and document history live in Postgres")
 	}
 	if err := migrateDatabase(databaseURL); err != nil {
 		log.Fatal(err)
@@ -178,7 +178,10 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticato
 		api.Group(func(r chi.Router) {
 			r.Use(auth.ValidateSession)
 			r.Use(auth.ValidateXSRFToken)
+			projects := &projectAPI{store: h.store, auth: auth}
 			r.Route("/docs", (&docAPI{store: h.store, auth: auth}).routes)
+			r.Route("/projects", projects.projectRoutes)
+			r.Get("/users", projects.listUsers)
 		})
 
 		// Collaboration sockets: authenticated, but no XSRF check. A browser

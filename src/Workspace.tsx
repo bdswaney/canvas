@@ -44,7 +44,7 @@ export function Workspace({
   username: string;
   onSignedOut: () => void;
 }) {
-  const { doc, awareness, status, synced, peers } = useSync(docID, onSignedOut);
+  const { doc, awareness, status, synced, peers, refused } = useSync(docID, onSignedOut);
   const notes = useSharedText(doc, 'notes');
   const rendered = useTextSnapshot(notes);
   const { doc: meta, error, refresh } = useDoc(docID);
@@ -212,6 +212,13 @@ export function Workspace({
               </Button>
             </Group>
           </Group>
+
+          {refused && (
+            <Alert color="orange" variant="light" title="This document is no longer live here">
+              {refused} Nothing further will arrive, and anything typed here now stays on this
+              screen.
+            </Alert>
+          )}
 
           {saveError && (
             <Alert color="red" variant="light">

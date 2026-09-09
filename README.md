@@ -63,7 +63,7 @@ client                                  server
   |  <-> update / awareness ------------->|   relayed to the other clients
 ```
 
-The journal is unbounded: documents grow with every keystroke and are never compacted. Saving does **not** trim it — see the note under Saving below. Measured on a room with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
+The journal is unbounded: documents grow with every keystroke and are never compacted. Saving does **not** trim it — see the note under Saving below. Measured on a document with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
 
 ## Editing and carets
 
@@ -93,12 +93,39 @@ Every client publishes an identity and its pointer position on the awareness cha
 
 A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
 
+## Projects and documents
+
+A **project** contains documents and the people who can reach them. That is the whole hierarchy.
+
+```
+GET    /api/projects                       list projects
+POST   /api/projects                       create one
+DELETE /api/projects/{id}                  archive one
+```
+
+Because a document changes over REST with no socket to announce it, the project screen and the navbar refetch when the tab is looked at again, the same way a document picks up saves made elsewhere.
+
+## Archiving
+
+Nothing is deleted. `DELETE /api/projects/{id}` and `DELETE /api/docs/{id}` set a `deleted_at` timestamp, which hides the row from every read path.
+
+This is not squeamishness. `projects` cascades to `docs`, which cascades to `doc_versions`, so a real delete of a project would destroy the saved history under it — and history is the one layer of Canvas that cannot be rebuilt. Everything else, the journal and the CRDT state, is derivable from it.
+
+Archiving a project hides its documents with it, including ones that were never archived themselves. `ProjectMember` is where that is enforced: it returns false for an archived project, so the one gate every handler already shares also covers this rather than each caller remembering.
+
+Two places where an archived row would otherwise stay usable, both invisible to a test that only checks the endpoint:
+
+- `Doc` excludes archived documents, because that is the existence check the **collaboration socket** makes before accepting a connection. An archived document that still resolved there would be one people kept editing live.
+- `SaveDoc` guards its version bump on `deleted_at IS NULL`, or a save into an archived document would quietly write history.
+
+**There is no un-archive yet.** Nothing is lost and restoring one is an `UPDATE` away, but it needs a decision first about what restoring a document inside a still-archived project should mean.
+
 ## Documents, saving, and history
 
 A document belongs to a project and has an immutable history of saved versions. Editing is live for everyone in the document, but nothing enters that history until someone saves.
 
 ```
-GET    /api/docs                     list documents
+GET    /api/docs[?projectId=]        list documents, optionally within one project
 POST   /api/docs                     create one
 GET    /api/docs/{id}                metadata, including the hash of the last saved artifact
 POST   /api/docs/{id}/save           commit a version
@@ -118,7 +145,7 @@ People are referenced by `SessionUsers.Id` and never by username, because userna
 
 ## Persistence
 
-Documents, their saved versions, and their update journals are stored in Postgres. `DATABASE_URL` is required: accounts and room history both live there.
+Documents, their saved versions, and their update journals are stored in Postgres. `DATABASE_URL` is required: accounts and document history both live there.
 
 ```sh
 mise run db       # start a local Postgres container on 127.0.0.1:5432
@@ -127,7 +154,7 @@ export DATABASE_URL='postgres://canvas:canvas@127.0.0.1:5432/canvas?sslmode=disa
 mise run migrate  # apply migrations (the server also does this at startup)
 ```
 
-`mise run test` skips the Postgres store test unless `DATABASE_URL` is set; every other test uses the in-memory store, which is kept for exactly that reason.
+`mise run test` skips the Postgres half of the store suite unless `DATABASE_URL` is set; every other test uses the in-memory store, which is kept for exactly that reason. `TestStores` runs one suite against both implementations and asserts *which* id and *which* name come back rather than how many rows, because the two have drifted before — `Version.Author` once held an id in memory and a username in Postgres, and a test that only counted rows saw nothing.
 
 ## Migrations
 
@@ -136,9 +163,33 @@ Schema lives in `migrations/`, embedded in the binary and applied at startup wit
 - `migrations/app` (`schema_migrations`) — this application's tables.
 - `migrations/session` (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
 
-The app set depends on the session set: `doc_versions.author_id` references `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
+The app set depends on the session set: `doc_versions.author_id` and `project_members.user_id` both reference `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
 
 `SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The development container is already `postgres:18-alpine`; check any other deployment target before the first migration runs.
+
+## Membership
+
+**Membership in a project is the authorization boundary.** A document is reachable only by members of the project it belongs to. `docs.project_id` is `NOT NULL`, so every document has exactly one project and the gate is a single join.
+
+```
+GET    /api/users                              every account, for the member picker
+GET    /api/projects/{id}/members              who is in a project
+POST   /api/projects/{id}/members              add somebody
+DELETE /api/projects/{id}/members/{userID}     remove them
+```
+
+The lists that would otherwise leak the existence of other people's work — projects and documents — are filtered in SQL by the person asking. Every single-row read and write is gated in the handler instead, so there is one copy of the rule rather than one per store. **Refusals are answered as `404`, never `403`**, so that ids cannot be probed for existence.
+
+Four things that are decisions rather than consequences of the design:
+
+- **The migration seeds every account that existed into every project that existed.** That preserves exactly what was true the moment before it ran — everyone could see everything — and applies only to rows that already existed. Accounts and projects created afterwards get memberships explicitly.
+- **Creating a project joins it.** This one is forced: otherwise you could not see what you had just made.
+- **There are no roles.** Any member can add or remove any other, including the person who created the project. That is the same trust assumption the save endpoint already makes, and it means membership is a decision the whole group shares.
+- **A project cannot be emptied.** The last member cannot leave, because a project with nobody in it is unreachable by anyone who could put it right.
+
+`GET /api/users` shows every username to every signed-in person. That is a real disclosure, and it is deliberate: there is no way to grant access to somebody you cannot name, and the alternative is inviting by exact spelling with no feedback. Revisit it if Canvas ever holds more than one organisation.
+
+Known gap: removing somebody does not close the sockets they already have open. They lose access at their next reconnect, like a signed-out session.
 
 ## Accounts and sessions
 
@@ -168,9 +219,21 @@ The WebSocket route is authenticated but carries no XSRF check, because a browse
 
 The session is checked *after* the upgrade, and a socket without one is closed with code **4401**. y-websocket treats 4400-4499 as permanent and stops reconnecting; a rejected handshake would instead look like a network failure and be retried forever. The client listens for that code and returns to the login screen.
 
+Three close codes are in that permanent range:
+
+| Code | Meaning | What the client does |
+|---|---|---|
+| 4401 | The session has lapsed | Re-checks the session and shows the login screen |
+| 4404 | No such document | Says so, and stops |
+| 4405 | Not a member of the document's project | Says so, and stops |
+
+A permanent close is explained on screen rather than left as "disconnected", which is otherwise indistinguishable from a network problem the client will never retry out of.
+
+Authorization is the project membership check, which the socket makes itself, because a live socket bypasses every REST handler.
+
 Sessions expire after ten minutes without an HTTP request, and only HTTP requests refresh them — someone typing over a WebSocket makes none. The client therefore polls `GET /api/session` every two minutes, and whenever a tab becomes visible again.
 
-One known gap: the session is validated when the socket opens, not continuously. Signing out elsewhere does not close sockets that are already connected; they keep working until they reconnect.
+Two known gaps: the session is validated when the socket opens, not continuously, so signing out elsewhere does not close sockets that are already connected — they keep working until they reconnect. The same is true of membership: removing somebody leaves their open sockets alive until they next reconnect.
 
 ## Sharing a local server with ngrok
 

@@ -112,9 +112,9 @@ func expectSync(t *testing.T, conn *websocket.Conn, subType uint64) []byte {
 }
 
 // A joining client is asked for its state and, after asking for the
-// document, is told the room is empty so that it flips to synced.
+// document, is told there is nothing stored so that it flips to synced.
 func TestHandshakeInEmptyRoom(t *testing.T) {
-	relay := newTestRelay(t, NewMemoryStore())
+	relay := newTestRelay(t, newTestStore(t))
 	conn := relay.dial(t, "empty")
 
 	if payload := expectSync(t, conn, syncStep1); !bytes.Equal(payload, emptyStateVector) {
@@ -127,7 +127,7 @@ func TestHandshakeInEmptyRoom(t *testing.T) {
 }
 
 func TestUpdateReachesOtherClients(t *testing.T) {
-	relay := newTestRelay(t, NewMemoryStore())
+	relay := newTestRelay(t, newTestStore(t))
 	sender, receiver, bystander := relay.dial(t, "shared"), relay.dial(t, "shared"), relay.dial(t, "other")
 	for _, conn := range []*websocket.Conn{sender, receiver, bystander} {
 		expectSync(t, conn, syncStep1)
@@ -147,14 +147,14 @@ func TestUpdateReachesOtherClients(t *testing.T) {
 	// Rooms are isolated: the bystander only ever sees its own handshake.
 	write(t, bystander, syncFrame(syncStep1, emptyStateVector))
 	if payload := expectSync(t, bystander, syncStep2); !bytes.Equal(payload, emptyUpdate) {
-		t.Errorf("other room saw % x", payload)
+		t.Errorf("other document saw % x", payload)
 	}
 }
 
 // A client answers the server's step 1 with a step 2 carrying state it
 // already had. That state must be logged, not just relayed.
 func TestStep2FromClientIsPersisted(t *testing.T) {
-	store := NewMemoryStore()
+	store := newTestStore(t)
 	relay := newTestRelay(t, store)
 	first := relay.dial(t, "restored")
 	expectSync(t, first, syncStep1)
@@ -172,7 +172,7 @@ func TestStep2FromClientIsPersisted(t *testing.T) {
 }
 
 func TestAwarenessIsRelayedButNotStored(t *testing.T) {
-	store := NewMemoryStore()
+	store := newTestStore(t)
 	relay := newTestRelay(t, store)
 	sender, receiver := relay.dial(t, "presence"), relay.dial(t, "presence")
 	expectSync(t, sender, syncStep1)
@@ -189,7 +189,7 @@ func TestAwarenessIsRelayedButNotStored(t *testing.T) {
 }
 
 func TestInvalidDocID(t *testing.T) {
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
+	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(newTestStore(t)), nil, stubAuth{valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +210,7 @@ func TestInvalidDocID(t *testing.T) {
 // An expired session must close the socket with a code y-websocket treats as
 // permanent, rather than leaving the client to reconnect forever.
 func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
-	relay := newTestRelayWithAuth(t, NewMemoryStore(), stubAuth{valid: false})
+	relay := newTestRelayWithAuth(t, newTestStore(t), stubAuth{valid: false})
 	conn := relay.dialID(t, "00000000-0000-4000-8000-000000000099")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -223,7 +223,7 @@ func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
 
 // A valid session still gets the normal handshake.
 func TestAuthenticatedSocketHandshakes(t *testing.T) {
-	relay := newTestRelayWithAuth(t, NewMemoryStore(), stubAuth{valid: true})
+	relay := newTestRelayWithAuth(t, newTestStore(t), stubAuth{valid: true})
 	conn := relay.dial(t, "private")
 	if payload := expectSync(t, conn, syncStep1); !bytes.Equal(payload, emptyStateVector) {
 		t.Errorf("state vector = % x, want % x", payload, emptyStateVector)
@@ -231,9 +231,9 @@ func TestAuthenticatedSocketHandshakes(t *testing.T) {
 }
 
 // A socket for a document that does not exist is closed permanently rather
-// than quietly creating a room whose journal nothing can read.
+// than quietly creating a session whose journal nothing can read.
 func TestUnknownDocumentIsClosedPermanently(t *testing.T) {
-	relay := newTestRelay(t, NewMemoryStore())
+	relay := newTestRelay(t, newTestStore(t))
 	conn := relay.dialID(t, "00000000-0000-4000-8000-0000000000ff")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -50,7 +50,7 @@ func decode[T any](t *testing.T, w *httptest.ResponseRecorder) T {
 }
 
 func TestSaveCreatesVersions(t *testing.T) {
-	handler := newDocAPI(t, NewMemoryStore())
+	handler := newDocAPI(t, newTestStore(t))
 
 	created := do(t, handler, "POST", "/api/docs", map[string]string{"name": "Notes"})
 	if created.Code != http.StatusCreated {
@@ -113,7 +113,7 @@ func TestSaveCreatesVersions(t *testing.T) {
 }
 
 func TestSaveRejectsBadRequests(t *testing.T) {
-	store := NewMemoryStore()
+	store := newTestStore(t)
 	handler := newDocAPI(t, store)
 	doc := decode[Doc](t, do(t, handler, "POST", "/api/docs", map[string]string{"name": "Notes"}))
 
@@ -144,7 +144,7 @@ func TestSaveRejectsBadRequests(t *testing.T) {
 }
 
 func TestUnknownDocumentIsNotFound(t *testing.T) {
-	handler := newDocAPI(t, NewMemoryStore())
+	handler := newDocAPI(t, newTestStore(t))
 	for _, target := range []string{
 		"/api/docs/00000000-0000-4000-8000-0000000000ff",
 		"/api/docs/00000000-0000-4000-8000-0000000000ff/versions",
@@ -162,7 +162,7 @@ func TestUnknownDocumentIsNotFound(t *testing.T) {
 
 // The docs API must not shadow the app's own client-side routes.
 func TestDocRoutesDoNotSwallowTheApp(t *testing.T) {
-	handler := newDocAPI(t, NewMemoryStore())
+	handler := newDocAPI(t, newTestStore(t))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/docs/anything", nil))
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`id="root"`)) {

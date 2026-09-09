@@ -47,6 +47,14 @@ type authenticator interface {
 	// UserFromCtx returns the authenticated user, if the context has been
 	// through session validation.
 	UserFromCtx(ctx context.Context) (User, bool)
+
+	// Users lists the accounts that exist, so a member can pick somebody to
+	// add to a project. This deliberately shows every username to every
+	// signed-in person: there is no way to grant access to someone you cannot
+	// name, and the alternative is inviting by exact spelling with no
+	// feedback. It is a real disclosure, and worth revisiting if Canvas ever
+	// holds more than one organisation.
+	Users(ctx context.Context) ([]User, error)
 }
 
 // passwordAuth adapts the session package's PasswordAuth to authenticator.
@@ -73,12 +81,50 @@ func newPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*passwordAuth, error
 	return &passwordAuth{PasswordAuth: auth, pool: pool}, nil
 }
 
+// ValidateSessionCtx validates the session and returns a context carrying the
+// user, which is what the WebSocket handler checks membership with.
+//
+// The package's API form of ValidateSession is not the same as its middleware:
+// it validates the session and carries its username, but only the middleware
+// looks the account up and attaches it to the context. So this has to do that
+// part itself — without it UserFromCtx finds nothing, and the socket refuses
+// every member as a stranger.
 func (a *passwordAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
 	ctx, err := a.API().ValidateSession(ctx)
 	if err != nil {
 		return ctx, fmt.Errorf("validate session: %w", err)
 	}
-	return ctx, nil
+
+	session, ok := ctx.Value(sessioninfo.CtxSessionInfo).(*sessioninfo.SessionData)
+	if !ok || session.SessionInfo == nil {
+		return ctx, errors.New("validated session carries no session info")
+	}
+
+	// Matched the way the session package matches it, so a login that differs
+	// only by case or Unicode form resolves to the same account.
+	var id, username string
+	var disabled bool
+	err = a.pool.QueryRow(ctx,
+		`SELECT "Id"::text, "Username", "Disabled" FROM "SessionUsers"
+		 WHERE "NormalizedUsername" = casefold(normalize($1))`, session.Username).Scan(&id, &username, &disabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ctx, fmt.Errorf("no account named %q", session.Username)
+	}
+	if err != nil {
+		return ctx, fmt.Errorf("look up the session's account: %w", err)
+	}
+	if disabled {
+		return ctx, fmt.Errorf("account %q is disabled", username)
+	}
+	userID, err := ccc.UUIDFromString(id)
+	if err != nil {
+		return ctx, fmt.Errorf("parse user id %q: %w", id, err)
+	}
+
+	return context.WithValue(ctx, sessioninfo.CtxUserInfo, &sessioninfo.UserInfo{
+		ID:       userID,
+		Username: username,
+	}), nil
 }
 
 // UserFromCtx reads the context value directly rather than calling
@@ -89,6 +135,26 @@ func (a *passwordAuth) UserFromCtx(ctx context.Context) (User, bool) {
 		return User{}, false
 	}
 	return User{ID: info.ID.String(), Username: info.Username}, true
+}
+
+// Users lists every account, ordered by name. The session package keys
+// everything by id and offers no listing, so this reads the table directly.
+func (a *passwordAuth) Users(ctx context.Context) ([]User, error) {
+	rows, err := a.pool.Query(ctx,
+		`SELECT "Id"::text, "Username" FROM "SessionUsers" WHERE NOT "Disabled" ORDER BY "Username"`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var user User
+		if err := rows.Scan(&user.ID, &user.Username); err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
 }
 
 // createUser adds a user account. The HTTP handler for this sits behind
