@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"github.com/bdswaney/canvas/internal/auth/authtest"
+	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/store"
 	"io/fs"
 	"net/http"
@@ -17,7 +19,7 @@ func TestFrontendRouting(t *testing.T) {
 	handler, err := newHandler(fstest.MapFS{
 		"index.html":    {Data: []byte(index)},
 		"assets/app.js": {Data: []byte(script)},
-	}, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
+	}, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,7 @@ func TestFrontendRouting(t *testing.T) {
 }
 
 func TestMissingFrontendEntryPoint(t *testing.T) {
-	if _, err := newHandler(fstest.MapFS{}, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true}); err == nil {
+	if _, err := newHandler(fstest.MapFS{}, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true}); err == nil {
 		t.Fatal("expected error for missing index.html")
 	}
 }
@@ -80,7 +82,7 @@ func TestEmbeddedFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
+	handler, err := newHandler(assets, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,5 +90,21 @@ func TestEmbeddedFrontend(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/artifacts/example", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="root"`) {
 		t.Fatalf("embedded app unavailable: status %d", w.Code)
+	}
+}
+
+// The docs API must not shadow the app's own client-side routes.
+func TestDocRoutesDoNotSwallowTheApp(t *testing.T) {
+	handler, err := newHandler(
+		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
+		relay.NewHub(newTestStore(t)), nil, authtest.Stub{Valid: true},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest("GET", "/docs/anything", nil))
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`id="root"`)) {
+		t.Fatalf("client route returned %d: %s", w.Code, w.Body)
 	}
 }

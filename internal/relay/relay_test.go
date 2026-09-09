@@ -1,4 +1,4 @@
-package main
+package relay
 
 import (
 	"bytes"
@@ -10,10 +10,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"testing/fstest"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/go-chi/chi/v5"
 )
 
 // testRelay starts the server and hands out sockets for documents created on
@@ -31,11 +31,9 @@ func newTestRelay(t *testing.T, st store.Store) *testRelay {
 
 func newTestRelayWithAuth(t *testing.T, st store.Store, authn auth.Authenticator) *testRelay {
 	t.Helper()
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(st), nil, authn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(handler)
+	router := chi.NewRouter()
+	router.Get("/api/sync/doc/{docID}", NewHub(st).Handler(nil, authn))
+	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	return &testRelay{
 		store: st,
@@ -101,7 +99,7 @@ func expectSync(t *testing.T, conn *websocket.Conn, subType uint64) []byte {
 	t.Helper()
 	r := lib0.NewReader(read(t, conn))
 	messageType, err := r.VarUint()
-	if err != nil || messageType != messageSync {
+	if err != nil || messageType != MessageSync {
 		t.Fatalf("message type = %d, %v; want sync", messageType, err)
 	}
 	got, err := r.VarUint()
@@ -193,11 +191,9 @@ func TestAwarenessIsRelayedButNotStored(t *testing.T) {
 }
 
 func TestInvalidDocID(t *testing.T) {
-	handler, err := newHandler(fstest.MapFS{"index.html": {Data: []byte("<div id=\"root\"></div>")}}, newHub(newTestStore(t)), nil, authtest.Stub{Valid: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(handler)
+	router := chi.NewRouter()
+	router.Get("/api/sync/doc/{docID}", NewHub(newTestStore(t)).Handler(nil, authtest.Stub{Valid: true}))
+	server := httptest.NewServer(router)
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -220,8 +216,8 @@ func TestUnauthenticatedSocketIsClosedPermanently(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, _, err := conn.Read(ctx)
-	if got := websocket.CloseStatus(err); got != statusUnauthenticated {
-		t.Fatalf("close status = %d (%v), want %d", got, err, statusUnauthenticated)
+	if got := websocket.CloseStatus(err); got != StatusUnauthenticated {
+		t.Fatalf("close status = %d (%v), want %d", got, err, StatusUnauthenticated)
 	}
 }
 
@@ -242,7 +238,25 @@ func TestUnknownDocumentIsClosedPermanently(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != statusUnknownDoc {
-		t.Fatalf("close status = %d (%v), want %d", websocket.CloseStatus(err), err, statusUnknownDoc)
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != StatusUnknownDoc {
+		t.Fatalf("close status = %d (%v), want %d", websocket.CloseStatus(err), err, StatusUnknownDoc)
+	}
+}
+
+// The collaboration socket bypasses every REST handler, so it carries the
+// membership check itself and closes with a code the client treats as final.
+func TestNonMemberSocketIsClosed(t *testing.T) {
+	st := newTestStore(t)
+	relay := newTestRelayWithAuth(t, st, authtest.Stub{Valid: true, UserID: authtest.OutsiderID})
+	doc, err := st.CreateDoc(context.Background(), store.DefaultProjectID, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	conn := relay.dialID(t, doc.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != StatusNotAMember {
+		t.Fatalf("close status = %d (%v), want %d", websocket.CloseStatus(err), err, StatusNotAMember)
 	}
 }

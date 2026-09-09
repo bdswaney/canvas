@@ -6,8 +6,10 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"github.com/bdswaney/canvas/internal/api"
 	"github.com/bdswaney/canvas/internal/auth"
 	"github.com/bdswaney/canvas/internal/migrate"
+	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/store"
 	"io/fs"
 	"log"
@@ -76,7 +78,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(db), originPatterns, authn)
+	handler, err := newHandler(assets, relay.NewHub(db), originPatterns, authn)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -163,9 +165,7 @@ func origins() ([]string, error) {
 	return patterns, nil
 }
 
-func docID(r *http.Request) string { return chi.URLParam(r, "docID") }
-
-func newHandler(assets fs.FS, h *hub, originPatterns []string, authn auth.Authenticator) (http.Handler, error) {
+func newHandler(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authenticator) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read frontend entry point: %w", err)
@@ -173,13 +173,13 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, authn auth.Authen
 
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
-	router.Route("/api", func(api chi.Router) {
+	router.Route("/api", func(r chi.Router) {
 		// Every API route needs the session cookie read and an XSRF token
 		// issued; SetXSRFToken depends on StartSession having run.
-		api.Use(authn.StartSession)
-		api.Use(authn.SetXSRFToken)
+		r.Use(authn.StartSession)
+		r.Use(authn.SetXSRFToken)
 
-		api.Route("/session", func(r chi.Router) {
+		r.Route("/session", func(r chi.Router) {
 			// Login cannot sit behind ValidateSession: there is no session
 			// yet. GET reports who you are and doubles as the call that
 			// primes the XSRF cookie and keeps a session alive while someone
@@ -191,20 +191,17 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, authn auth.Authen
 			r.With(authn.ValidateSession, authn.ValidateXSRFToken).Delete("/", authn.Logout())
 		})
 
-		api.Group(func(r chi.Router) {
+		r.Group(func(r chi.Router) {
 			r.Use(authn.ValidateSession)
 			r.Use(authn.ValidateXSRFToken)
-			projects := &projectAPI{store: h.store, auth: authn}
-			r.Route("/docs", (&docAPI{store: h.store, auth: authn}).routes)
-			r.Route("/projects", projects.projectRoutes)
-			r.Get("/users", projects.listUsers)
+			api.Mount(r, h.Store(), authn)
 		})
 
 		// Collaboration sockets: authenticated, but no XSRF check. A browser
 		// cannot set headers on a WebSocket handshake. What protects this is
 		// the session cookie being SameSite=Strict, so a cross-site handshake
 		// carries no cookie at all, with the Origin check behind it.
-		api.Get("/sync/doc/{docID}", h.syncHandler(originPatterns, authn))
+		r.Get("/sync/doc/{docID}", h.Handler(originPatterns, authn))
 	})
 	// Unrouted paths are client-side routes, static files, or genuine 404s.
 	spa := serveApp(assets, index)

@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"bytes"
@@ -10,19 +10,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"testing/fstest"
 )
 
 func newDocAPI(t *testing.T, st store.Store) http.Handler {
 	t.Helper()
-	handler, err := newHandler(
-		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		newHub(st), nil, authtest.Stub{Valid: true},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return handler
+	return mount(st, authtest.Stub{Valid: true})
 }
 
 func do(t *testing.T, handler http.Handler, method, target string, body any) *httptest.ResponseRecorder {
@@ -159,15 +151,5 @@ func TestUnknownDocumentIsNotFound(t *testing.T) {
 		if got := do(t, handler, method, target, nil).Code; got != http.StatusNotFound {
 			t.Errorf("%s %s = %d, want 404", method, target, got)
 		}
-	}
-}
-
-// The docs API must not shadow the app's own client-side routes.
-func TestDocRoutesDoNotSwallowTheApp(t *testing.T) {
-	handler := newDocAPI(t, newTestStore(t))
-	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, httptest.NewRequest("GET", "/docs/anything", nil))
-	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`id="root"`)) {
-		t.Fatalf("client route returned %d: %s", w.Code, w.Body)
 	}
 }

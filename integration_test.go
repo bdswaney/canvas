@@ -7,6 +7,7 @@ import (
 	"github.com/bdswaney/canvas/internal/auth"
 	"github.com/bdswaney/canvas/internal/lib0"
 	"github.com/bdswaney/canvas/internal/migrate"
+	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"net/http/cookiejar"
@@ -85,7 +86,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 
 	handler, err := newHandler(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		newHub(st), nil, authn,
+		relay.NewHub(st), nil, authn,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +175,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 		t.Fatalf("first frame is %v, want binary", kind)
 	}
 	r := lib0.NewReader(frame)
-	if messageType, err := r.VarUint(); err != nil || messageType != messageSync {
+	if messageType, err := r.VarUint(); err != nil || messageType != relay.MessageSync {
 		t.Fatalf("first frame type = %d, %v; want sync", messageType, err)
 	}
 }

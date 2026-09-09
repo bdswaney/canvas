@@ -1,4 +1,7 @@
-package main
+// Package relay is the Yjs WebSocket relay. It never interprets document
+// contents: every update is appended to a journal and replayed to joiners,
+// and the hub only routes bytes between the clients of one document.
+package relay
 
 import (
 	"context"
@@ -9,6 +12,8 @@ import (
 	"log"
 	"net/http"
 	"regexp"
+
+	"github.com/go-chi/chi/v5"
 	"sync"
 	"time"
 
@@ -17,12 +22,14 @@ import (
 
 // Top-level message types from the y-websocket protocol.
 const (
-	messageSync           = 0
+	// MessageSync is exported so a test outside this package can recognise
+	// the first frame a served socket sends.
+	MessageSync           = 0
 	messageAwareness      = 1
 	messageQueryAwareness = 3
 )
 
-// Sub-types of a messageSync frame.
+// Sub-types of a MessageSync frame.
 const (
 	syncStep1  = 0
 	syncStep2  = 1
@@ -33,9 +40,9 @@ const (
 	// y-websocket treats close codes in 4400-4499 as permanent and stops
 	// reconnecting, which is what an expired session or a missing document
 	// should mean.
-	statusUnauthenticated = 4401
-	statusUnknownDoc      = 4404
-	statusNotAMember      = 4405
+	StatusUnauthenticated = 4401
+	StatusUnknownDoc      = 4404
+	StatusNotAMember      = 4405
 
 	// A joining client replays the whole doc log, so allow generous frames.
 	readLimit = 32 << 20
@@ -83,20 +90,21 @@ type docSession struct {
 	loaded  bool
 }
 
-// hub owns the live document sessions. A session is dropped when its last
+// Hub owns the live document sessions. A session is dropped when its last
 // client leaves; the durable log in the store outlives it.
-type hub struct {
+type Hub struct {
 	store store.Store
 
 	mu       sync.Mutex
 	sessions map[string]*docSession
 }
 
-func newHub(store store.Store) *hub {
-	return &hub{store: store, sessions: map[string]*docSession{}}
+// NewHub returns a Hub over the given store.
+func NewHub(store store.Store) *Hub {
+	return &Hub{store: store, sessions: map[string]*docSession{}}
 }
 
-func (h *hub) session(docID string) *docSession {
+func (h *Hub) session(docID string) *docSession {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	r, ok := h.sessions[docID]
@@ -107,7 +115,7 @@ func (h *hub) session(docID string) *docSession {
 	return r
 }
 
-func (h *hub) join(docID string, c *client) *docSession {
+func (h *Hub) join(docID string, c *client) *docSession {
 	r := h.session(docID)
 	r.mu.Lock()
 	r.clients[c] = struct{}{}
@@ -115,7 +123,7 @@ func (h *hub) join(docID string, c *client) *docSession {
 	return r
 }
 
-func (h *hub) leave(r *docSession, c *client) {
+func (h *Hub) leave(r *docSession, c *client) {
 	r.mu.Lock()
 	delete(r.clients, c)
 	empty := len(r.clients) == 0
@@ -136,7 +144,7 @@ func (h *hub) leave(r *docSession, c *client) {
 }
 
 // history returns the session's updates, loading them from the store once.
-func (h *hub) history(ctx context.Context, r *docSession) ([][]byte, error) {
+func (h *Hub) history(ctx context.Context, r *docSession) ([][]byte, error) {
 	r.mu.Lock()
 	if r.loaded {
 		updates := append([][]byte(nil), r.updates...)
@@ -160,7 +168,7 @@ func (h *hub) history(ctx context.Context, r *docSession) ([][]byte, error) {
 	return append([][]byte(nil), r.updates...), nil
 }
 
-func (h *hub) append(ctx context.Context, r *docSession, update []byte) error {
+func (h *Hub) append(ctx context.Context, r *docSession, update []byte) error {
 	r.mu.Lock()
 	r.updates = append(r.updates, update)
 	r.mu.Unlock()
@@ -185,13 +193,17 @@ func (r *docSession) broadcast(sender *client, frame []byte) {
 }
 
 func syncFrame(subType uint64, payload []byte) []byte {
-	return lib0.AppendVarBytes(lib0.AppendVarUint(lib0.AppendVarUint(nil, messageSync), subType), payload)
+	return lib0.AppendVarBytes(lib0.AppendVarUint(lib0.AppendVarUint(nil, MessageSync), subType), payload)
 }
 
-// syncHandler serves the collaboration socket for one document.
-func (h *hub) syncHandler(originPatterns []string, authn auth.Authenticator) http.HandlerFunc {
+// Store is the store the hub journals into, shared with the HTTP API.
+func (h *Hub) Store() store.Store { return h.store }
+
+// Handler serves the collaboration socket for one document, expected to be
+// mounted at a route with a {docID} parameter.
+func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		name := docID(r)
+		name := chi.URLParam(r, "docID")
 		if !idPattern.MatchString(name) {
 			http.Error(w, "invalid document id", http.StatusBadRequest)
 			return
@@ -211,7 +223,7 @@ func (h *hub) syncHandler(originPatterns []string, authn auth.Authenticator) htt
 		// and y-websocket would reconnect against it forever.
 		ctx, err := authn.ValidateSessionCtx(r.Context())
 		if err != nil {
-			conn.Close(statusUnauthenticated, "session expired")
+			conn.Close(StatusUnauthenticated, "session expired")
 			return
 		}
 
@@ -219,7 +231,7 @@ func (h *hub) syncHandler(originPatterns []string, authn auth.Authenticator) htt
 		// session out of thin air and journal updates nothing can ever read.
 		doc, err := h.store.Doc(ctx, name)
 		if err != nil {
-			conn.Close(statusUnknownDoc, "unknown document")
+			conn.Close(StatusUnknownDoc, "unknown document")
 			return
 		}
 
@@ -233,7 +245,7 @@ func (h *hub) syncHandler(originPatterns []string, authn auth.Authenticator) htt
 			conn.Close(websocket.StatusInternalError, "membership check failed")
 			return
 		case !member:
-			conn.Close(statusNotAMember, "not a member of this project")
+			conn.Close(StatusNotAMember, "not a member of this project")
 			return
 		}
 
@@ -276,7 +288,7 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, c *client) {
 	}
 }
 
-func (h *hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
+func (h *Hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
 	for {
 		kind, frame, err := c.conn.Read(ctx)
 		if err != nil {
@@ -294,7 +306,7 @@ func (h *hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
 	}
 }
 
-func (h *hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame []byte) error {
+func (h *Hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame []byte) error {
 	reader := lib0.NewReader(frame)
 	messageType, err := reader.VarUint()
 	if err != nil {
@@ -306,7 +318,7 @@ func (h *hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame 
 		// Awareness is ephemeral presence state: relay it, never store it.
 		rm.broadcast(c, frame)
 		return nil
-	case messageSync:
+	case MessageSync:
 	default:
 		return nil
 	}

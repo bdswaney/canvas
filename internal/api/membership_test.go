@@ -1,4 +1,4 @@
-package main
+package api
 
 import (
 	"context"
@@ -6,22 +6,11 @@ import (
 	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"testing"
-	"testing/fstest"
-	"time"
-
-	"github.com/coder/websocket"
 )
 
 func newAPIAs(t *testing.T, st store.Store, userID string) http.Handler {
 	t.Helper()
-	handler, err := newHandler(
-		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		newHub(st), nil, authtest.Stub{Valid: true, UserID: userID},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return handler
+	return mount(st, authtest.Stub{Valid: true, UserID: userID})
 }
 
 // A signed-in account that belongs to no project sees nothing and can reach
@@ -66,24 +55,6 @@ func TestNonMemberSeesNothing(t *testing.T) {
 	// still readable by somebody who belongs to its project.
 	if w := do(t, owner, "GET", "/api/docs/"+doc.ID, nil); w.Code != http.StatusOK {
 		t.Errorf("the document did not survive a non-member's attempts: %d", w.Code)
-	}
-}
-
-// The collaboration socket bypasses every REST handler, so it carries the
-// membership check itself and closes with a code the client treats as final.
-func TestNonMemberSocketIsClosed(t *testing.T) {
-	st := newTestStore(t)
-	relay := newTestRelayWithAuth(t, st, authtest.Stub{Valid: true, UserID: authtest.OutsiderID})
-	doc, err := st.CreateDoc(context.Background(), store.DefaultProjectID, "Notes")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	conn := relay.dialID(t, doc.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != statusNotAMember {
-		t.Fatalf("close status = %d (%v), want %d", websocket.CloseStatus(err), err, statusNotAMember)
 	}
 }
 
