@@ -1,4 +1,7 @@
-package main
+// Package api serves the REST endpoints for projects, documents, and
+// membership. Every handler here sits behind session validation and the XSRF
+// check; the collaboration socket is the relay's, not this package's.
+package api
 
 import (
 	"crypto/sha256"
@@ -20,6 +23,14 @@ const (
 	maxArtifactBytes = 8 << 20
 	maxSnapshotBytes = 16 << 20
 )
+
+// Mount attaches every endpoint under r: /docs, /projects, and /users.
+func Mount(r chi.Router, st store.Store, authn auth.Authenticator) {
+	projects := &projectAPI{store: st, auth: authn}
+	r.Route("/docs", (&docAPI{store: st, auth: authn}).routes)
+	r.Route("/projects", projects.projectRoutes)
+	r.Get("/users", projects.listUsers)
+}
 
 // docAPI serves the document endpoints.
 type docAPI struct {
