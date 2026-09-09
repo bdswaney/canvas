@@ -19,6 +19,9 @@ export function roomName(pathname: string = window.location.pathname): string {
 
 export type Status = 'connecting' | 'connected' | 'disconnected';
 
+// Matches statusUnauthenticated in sync.go.
+const signedOutCloseCode = 4401;
+
 export type Connection = {
   doc: Y.Doc;
   awareness: Awareness;
@@ -30,7 +33,7 @@ export type Connection = {
 
 // useSync owns one document and its relay connection for the component's
 // lifetime, and re-renders on connection, sync, and presence changes.
-export function useSync(room: string = roomName()): Connection {
+export function useSync(room: string = roomName(), onSignedOut?: () => void): Connection {
   const [doc] = useState(() => new Y.Doc());
   // Awareness outlives any single provider, so presence state set by the UI
   // survives a reconnect and StrictMode's double mount.
@@ -48,20 +51,29 @@ export function useSync(room: string = roomName()): Connection {
     const onSync = (isSynced: boolean) => setSynced(isSynced);
     const onAwareness = () => setPeers(awareness.getStates().size);
 
+    // The server closes the socket with 4401 when the session has lapsed.
+    // y-websocket treats 4400-4499 as permanent and stops reconnecting, so
+    // this is the only notice the app gets that it has been signed out.
+    const onClose = (event: CloseEvent | null) => {
+      if (event?.code === signedOutCloseCode) onSignedOut?.();
+    };
+
     provider.on('status', onStatus);
     provider.on('sync', onSync);
+    provider.on('connection-close', onClose);
     awareness.on('change', onAwareness);
 
     return () => {
       provider.off('status', onStatus);
       provider.off('sync', onSync);
+      provider.off('connection-close', onClose);
       awareness.off('change', onAwareness);
       provider.destroy();
       setStatus('connecting');
       setSynced(false);
       setPeers(1);
     };
-  }, [awareness, doc, room]);
+  }, [awareness, doc, onSignedOut, room]);
 
   return { doc, awareness, room, status, synced, peers };
 }

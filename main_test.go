@@ -15,7 +15,7 @@ func TestFrontendRouting(t *testing.T) {
 	handler, err := newHandler(fstest.MapFS{
 		"index.html":    {Data: []byte(index)},
 		"assets/app.js": {Data: []byte(script)},
-	}, newHub(NewMemoryStore()), nil)
+	}, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,8 @@ func TestFrontendRouting(t *testing.T) {
 		{"GET", "/api/sync/demo", 426, ""},
 		{"POST", "/api/sync/demo", 405, ""},
 		{"POST", "/artifacts/123", 405, ""},
+		// Session endpoints exist and are not the app HTML.
+		{"GET", "/api/session", 200, `{"authenticated":true}`},
 	} {
 		t.Run(tt.method+" "+tt.target, func(t *testing.T) {
 			w := httptest.NewRecorder()
@@ -66,7 +68,7 @@ func TestFrontendRouting(t *testing.T) {
 }
 
 func TestMissingFrontendEntryPoint(t *testing.T) {
-	if _, err := newHandler(fstest.MapFS{}, newHub(NewMemoryStore()), nil); err == nil {
+	if _, err := newHandler(fstest.MapFS{}, newHub(NewMemoryStore()), nil, stubAuth{valid: true}); err == nil {
 		t.Fatal("expected error for missing index.html")
 	}
 }
@@ -76,7 +78,7 @@ func TestEmbeddedFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(NewMemoryStore()), nil)
+	handler, err := newHandler(assets, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
