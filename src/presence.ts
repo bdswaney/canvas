@@ -59,7 +59,7 @@ function readPeers(awareness: Awareness): Peer[] {
 
 /**
  * usePresence publishes this client's identity and pointer position on the
- * awareness channel and returns the other clients in the room.
+ * awareness channel and returns the other clients editing this document.
  */
 export function usePresence(
   awareness: Awareness,
@@ -106,7 +106,7 @@ export function usePresence(
     };
     const onHide = () => schedule(null);
     // y-websocket only announces departures from Node, so a closing tab
-    // would otherwise linger in the room until awareness times it out.
+    // would otherwise linger until awareness times it out.
     const onUnload = () => removeAwarenessStates(awareness, [awareness.clientID], 'page closed');
 
     window.addEventListener('pointermove', onPointerMove);
@@ -122,7 +122,7 @@ export function usePresence(
       document.removeEventListener('visibilitychange', onHide);
       window.removeEventListener('pagehide', onUnload);
       if (frame !== 0) cancelAnimationFrame(frame);
-      // Leave no stale pointer behind for the peers still in the room.
+      // Leave no stale pointer behind for the peers still connected.
       if (published) awareness.setLocalStateField('pointer', null);
     };
   }, [awareness, surface]);

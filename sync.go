@@ -32,8 +32,9 @@ const (
 	// should mean.
 	statusUnauthenticated = 4401
 	statusUnknownDoc      = 4404
+	statusNotAMember      = 4405
 
-	// A joining client replays the whole room log, so allow generous frames.
+	// A joining client replays the whole doc log, so allow generous frames.
 	readLimit = 32 << 20
 	// Slow clients are disconnected rather than allowed to stall a broadcast.
 	sendBuffer = 64
@@ -46,7 +47,10 @@ var (
 	emptyUpdate      = []byte{0x00, 0x00}
 )
 
-var docIDPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
+// idPattern is the shape of a document id arriving in a socket URL. It only
+// has to be tight enough to keep a malformed value out of a query; the store
+// decides what exists.
+var idPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 type client struct {
 	conn *websocket.Conn
@@ -64,10 +68,11 @@ func (c *client) push(ctx context.Context, frame []byte) error {
 	}
 }
 
-// room relays updates between the clients of one document and keeps the
-// update log in memory, mirroring every append into the store.
-type room struct {
-	name string
+// docSession relays updates between the clients of one document and keeps
+// the update log in memory, mirroring every append into the store. It lives
+// only as long as somebody is connected; the durable log outlives it.
+type docSession struct {
+	docID string
 
 	mu      sync.Mutex
 	clients map[*client]struct{}
@@ -75,39 +80,39 @@ type room struct {
 	loaded  bool
 }
 
-// hub owns the live rooms. Rooms are dropped when their last client leaves;
-// the durable log in the store outlives them.
+// hub owns the live document sessions. A session is dropped when its last
+// client leaves; the durable log in the store outlives it.
 type hub struct {
 	store Store
 
-	mu    sync.Mutex
-	rooms map[string]*room
+	mu       sync.Mutex
+	sessions map[string]*docSession
 }
 
 func newHub(store Store) *hub {
-	return &hub{store: store, rooms: map[string]*room{}}
+	return &hub{store: store, sessions: map[string]*docSession{}}
 }
 
-func (h *hub) room(name string) *room {
+func (h *hub) session(docID string) *docSession {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	r, ok := h.rooms[name]
+	r, ok := h.sessions[docID]
 	if !ok {
-		r = &room{name: name, clients: map[*client]struct{}{}}
-		h.rooms[name] = r
+		r = &docSession{docID: docID, clients: map[*client]struct{}{}}
+		h.sessions[docID] = r
 	}
 	return r
 }
 
-func (h *hub) join(name string, c *client) *room {
-	r := h.room(name)
+func (h *hub) join(docID string, c *client) *docSession {
+	r := h.session(docID)
 	r.mu.Lock()
 	r.clients[c] = struct{}{}
 	r.mu.Unlock()
 	return r
 }
 
-func (h *hub) leave(r *room, c *client) {
+func (h *hub) leave(r *docSession, c *client) {
 	r.mu.Lock()
 	delete(r.clients, c)
 	empty := len(r.clients) == 0
@@ -117,18 +122,18 @@ func (h *hub) leave(r *room, c *client) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	// Another client may have joined while the room lock was released.
-	if current, ok := h.rooms[r.name]; ok && current == r {
+	// Another client may have joined while the session lock was released.
+	if current, ok := h.sessions[r.docID]; ok && current == r {
 		r.mu.Lock()
 		if len(r.clients) == 0 {
-			delete(h.rooms, r.name)
+			delete(h.sessions, r.docID)
 		}
 		r.mu.Unlock()
 	}
 }
 
-// history returns the room's updates, loading them from the store once.
-func (h *hub) history(ctx context.Context, r *room) ([][]byte, error) {
+// history returns the session's updates, loading them from the store once.
+func (h *hub) history(ctx context.Context, r *docSession) ([][]byte, error) {
 	r.mu.Lock()
 	if r.loaded {
 		updates := append([][]byte(nil), r.updates...)
@@ -137,7 +142,7 @@ func (h *hub) history(ctx context.Context, r *room) ([][]byte, error) {
 	}
 	r.mu.Unlock()
 
-	stored, err := h.store.Load(ctx, r.name)
+	stored, err := h.store.Load(ctx, r.docID)
 	if err != nil {
 		return nil, err
 	}
@@ -152,16 +157,16 @@ func (h *hub) history(ctx context.Context, r *room) ([][]byte, error) {
 	return append([][]byte(nil), r.updates...), nil
 }
 
-func (h *hub) append(ctx context.Context, r *room, update []byte) error {
+func (h *hub) append(ctx context.Context, r *docSession, update []byte) error {
 	r.mu.Lock()
 	r.updates = append(r.updates, update)
 	r.mu.Unlock()
-	return h.store.Append(ctx, r.name, update)
+	return h.store.Append(ctx, r.docID, update)
 }
 
-// broadcast sends a frame to every client in the room except the sender.
-// A client whose buffer is full is closed instead of blocking the room.
-func (r *room) broadcast(sender *client, frame []byte) {
+// broadcast sends a frame to every client in the session except the sender.
+// A client whose buffer is full is closed instead of blocking the session.
+func (r *docSession) broadcast(sender *client, frame []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for c := range r.clients {
@@ -184,7 +189,7 @@ func syncFrame(subType uint64, payload []byte) []byte {
 func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := docID(r)
-		if !docIDPattern.MatchString(name) {
+		if !idPattern.MatchString(name) {
 			http.Error(w, "invalid document id", http.StatusBadRequest)
 			return
 		}
@@ -201,19 +206,35 @@ func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.Hand
 		// so that an expired session closes the socket with a code the client
 		// treats as final. A rejected handshake looks like a network failure,
 		// and y-websocket would reconnect against it forever.
-		if _, err := auth.ValidateSessionCtx(r.Context()); err != nil {
+		ctx, err := auth.ValidateSessionCtx(r.Context())
+		if err != nil {
 			conn.Close(statusUnauthenticated, "session expired")
 			return
 		}
 
 		// A socket for a document that does not exist would otherwise create a
-		// room out of thin air and journal updates nothing can ever read.
-		if _, err := h.store.Doc(r.Context(), name); err != nil {
+		// session out of thin air and journal updates nothing can ever read.
+		doc, err := h.store.Doc(ctx, name)
+		if err != nil {
 			conn.Close(statusUnknownDoc, "unknown document")
 			return
 		}
 
-		ctx, cancel := context.WithCancel(r.Context())
+		// The real gate: a document is reachable only by members of its
+		// project. This is the same rule the REST handlers apply, checked
+		// here because a live socket bypasses them entirely.
+		user, _ := auth.UserFromCtx(ctx)
+		switch member, err := h.store.ProjectMember(ctx, doc.ProjectID, user.ID); {
+		case err != nil:
+			log.Printf("sync %s: membership check: %v", name, err)
+			conn.Close(websocket.StatusInternalError, "membership check failed")
+			return
+		case !member:
+			conn.Close(statusNotAMember, "not a member of this project")
+			return
+		}
+
+		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
 		c := &client{conn: conn, send: make(chan []byte, sendBuffer)}
@@ -252,7 +273,7 @@ func writeLoop(ctx context.Context, cancel context.CancelFunc, c *client) {
 	}
 }
 
-func (h *hub) readLoop(ctx context.Context, rm *room, c *client) error {
+func (h *hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
 	for {
 		kind, frame, err := c.conn.Read(ctx)
 		if err != nil {
@@ -270,7 +291,7 @@ func (h *hub) readLoop(ctx context.Context, rm *room, c *client) error {
 	}
 }
 
-func (h *hub) handleFrame(ctx context.Context, rm *room, c *client, frame []byte) error {
+func (h *hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame []byte) error {
 	reader := &reader{buf: frame}
 	messageType, err := reader.varUint()
 	if err != nil {
@@ -298,7 +319,7 @@ func (h *hub) handleFrame(ctx context.Context, rm *room, c *client, frame []byte
 
 	if subType == syncStep1 {
 		// The client asked for the document. Replay the log, then send an
-		// empty step 2 so the client flips to synced even in an empty room.
+		// empty step 2 so the client flips to synced even when nothing is stored.
 		updates, err := h.history(ctx, rm)
 		if err != nil {
 			return err

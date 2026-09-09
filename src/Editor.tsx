@@ -70,7 +70,7 @@ export function Editor({
           lineNumbers(),
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
-          placeholder('Start typing Markdown. Everyone in this room sees it as you type.'),
+          placeholder('Start typing Markdown. Everyone with this document open sees it as you type.'),
           EditorView.lineWrapping,
           markdownSupport(),
           themeCompartment.of(editorTheme(initialDark.current)),

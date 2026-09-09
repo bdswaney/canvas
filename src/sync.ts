@@ -10,19 +10,25 @@ export function relayURL(location: Location = window.location): string {
   return `${protocol}//${location.host}/api/sync/doc`;
 }
 
-// A document is addressed by id: /doc/<uuid>. Anything else means no document
-// is open yet and the app shows the picker instead.
-export function docIdFromPath(pathname: string = window.location.pathname): string | null {
-  const [prefix, id] = pathname.split('/').filter(Boolean);
-  if (prefix !== 'doc' || !id) return null;
-  return /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;
-}
-
 export type Status = 'connecting' | 'connected' | 'disconnected';
 
-// Matches statusUnauthenticated and statusUnknownDoc in sync.go. Both are in
-// the range y-websocket treats as permanent.
-const signedOutCloseCode = 4401;
+// Close codes from sync.go. All are in the 4400-4499 range that y-websocket
+// treats as permanent, so the client stops reconnecting rather than storming
+// against a refusal it cannot fix.
+const closeCodes = {
+  signedOut: 4401,
+  unknownDoc: 4404,
+  notAMember: 4405,
+} as const;
+
+// What to tell someone whose socket was refused for good. Without this a
+// refusal is indistinguishable from a network problem, and the app sits on
+// "disconnected" forever with nothing to act on.
+const refusalMessages: Record<number, string> = {
+  [closeCodes.unknownDoc]: 'This document no longer exists.',
+  [closeCodes.notAMember]:
+    'You are not a member of the project this document belongs to. Someone may have removed you.',
+};
 
 export type Connection = {
   doc: Y.Doc;
@@ -30,11 +36,17 @@ export type Connection = {
   docID: string;
   status: Status;
   synced: boolean;
+  // peers counts everyone connected to this document.
   peers: number;
+  // refused explains a close the client will never recover from, and is null
+  // for an ordinary disconnect that will retry.
+  refused: string | null;
 };
 
-// useSync owns one document and its relay connection for the component's
-// lifetime, and re-renders on connection, sync, and presence changes.
+/**
+ * useSync owns one document and its relay connection for the component's
+ * lifetime, and re-renders on connection, sync, and presence changes.
+ */
 export function useSync(docID: string, onSignedOut?: () => void): Connection {
   const [doc] = useState(() => new Y.Doc());
   // Awareness outlives any single provider, so presence state set by the UI
@@ -43,21 +55,33 @@ export function useSync(docID: string, onSignedOut?: () => void): Connection {
   const [status, setStatus] = useState<Status>('connecting');
   const [synced, setSynced] = useState(false);
   const [peers, setPeers] = useState(1);
+  const [refused, setRefused] = useState<string | null>(null);
 
   // The provider is created here rather than in state so that StrictMode's
   // double mount tears its socket down and opens a fresh one, instead of
   // leaving the component holding a destroyed provider.
   useEffect(() => {
     const provider = new WebsocketProvider(relayURL(), docID, doc, { awareness });
-    const onStatus = (event: { status: Status }) => setStatus(event.status);
+    const onStatus = (event: { status: Status }) => {
+      setStatus(event.status);
+      // Remote awareness states outlive a dropped socket, so a count taken
+      // while disconnected would claim company that is no longer reachable.
+      if (event.status !== 'connected') setPeers(1);
+    };
     const onSync = (isSynced: boolean) => setSynced(isSynced);
     const onAwareness = () => setPeers(awareness.getStates().size);
 
-    // The server closes the socket with 4401 when the session has lapsed.
-    // y-websocket treats 4400-4499 as permanent and stops reconnecting, so
-    // this is the only notice the app gets that it has been signed out.
+    // A close in the permanent range is the only notice the app gets that
+    // the socket will not come back: a lapsed session is re-checked, and
+    // anything else is explained to the person looking at the screen.
     const onClose = (event: CloseEvent | null) => {
-      if (event?.code === signedOutCloseCode) onSignedOut?.();
+      if (event === null) return;
+      if (event.code === closeCodes.signedOut) {
+        onSignedOut?.();
+        return;
+      }
+      const message = refusalMessages[event.code];
+      if (message) setRefused(message);
     };
 
     provider.on('status', onStatus);
@@ -74,10 +98,11 @@ export function useSync(docID: string, onSignedOut?: () => void): Connection {
       setStatus('connecting');
       setSynced(false);
       setPeers(1);
+      setRefused(null);
     };
   }, [awareness, doc, docID, onSignedOut]);
 
-  return { doc, awareness, docID, status, synced, peers };
+  return { doc, awareness, docID, status, synced, peers, refused };
 }
 
 // useSharedText hands out one named Y.Text for the document's lifetime.
