@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { IconUserMinus, IconUserPlus, IconUsersGroup } from '@tabler/icons-react';
 import { Alert, Badge, Button, Group, Loader, Select, Stack, Text, Title } from '@mantine/core';
 import {
   addMember,
@@ -47,7 +48,12 @@ export function Members({ projectID, me }: { projectID: string; me: string }) {
 
   return (
     <Stack>
-      <Title order={2}>Members</Title>
+      <Title order={2}>
+        <Group gap="xs">
+          <IconUsersGroup size={22} stroke={1.5} />
+          Members
+        </Group>
+      </Title>
       <Text size="sm" c="dimmed">
         Everyone here can open every document in this project, and can add or remove anyone
         else.
@@ -64,6 +70,7 @@ export function Members({ projectID, me }: { projectID: string; me: string }) {
         placeholder={addable.length === 0 ? 'Everyone is already a member' : 'Pick a person'}
         disabled={addable.length === 0 || busy}
         data={addable.map((person) => ({ value: person.userId, label: person.username }))}
+        leftSection={<IconUserPlus size={16} stroke={1.5} />}
         searchable
         value={null}
         onChange={(userID) => {
@@ -92,6 +99,7 @@ export function Members({ projectID, me }: { projectID: string; me: string }) {
                 loading={busy}
                 // The last member cannot leave; the server refuses it too.
                 disabled={last}
+                leftSection={<IconUserMinus size={15} stroke={1.5} />}
                 onClick={() => void change(removeMember(projectID, member.userId))}
               >
                 {member.username === me ? 'Leave' : 'Remove'}

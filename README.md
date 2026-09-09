@@ -32,6 +32,22 @@ Optionally enable automatic tool selection in Bash by adding `eval "$(mise activ
 - Define repeatable project workflows as mise tasks as implementation is added. CI should use the same pinned tools and tasks.
 - Do not commit credentials or machine-specific overrides. Use ignored `mise.local.toml` for local overrides.
 
+## Navigation
+
+The app shell is a two-column navbar: a rail of the two things Canvas has — projects and documents — and the contents of whichever is selected. A document is always a project's, so opening one by link has to ask the server which project it belongs to before the navbar can show its neighbours; the URL does not carry it.
+
+Selecting in the rail and following a link both move it: the route leads and the rail follows, rather than the two holding separate ideas of where you are. Below `sm` the navbar collapses behind a burger and closes itself when a link is followed.
+
+The navbar is navigation; a project's own page is where things are created, archived, and its members managed.
+
+Icons come from `@tabler/icons-react`, imported by name so the bundle carries only the ones used — verified by checking that a used glyph is present in the built asset and an unused one is not.
+
+The Go binary embeds `dist/`, and `go:embed` has twice served a stale copy in this repo after a rebuild. After `mise run build:server`, confirm the binary really has the current frontend:
+
+```sh
+strings bin/canvas | grep -o 'index-[A-Za-z0-9_-]*\.js' | sort -u   # must match dist/assets/
+```
+
 ## Frontend
 
 The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains a sign-in screen, an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document, with a rendered preview beside it.

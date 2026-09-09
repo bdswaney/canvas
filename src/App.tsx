@@ -1,16 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import {
-  ActionIcon,
-  Anchor,
-  AppShell,
-  Center,
-  Group,
-  Loader,
-  Text,
-  Tooltip,
-} from '@mantine/core';
-import { ColorSchemeToggle } from './ColorSchemeToggle';
+import { Anchor, AppShell, Burger, Center, Group, Loader, Text } from '@mantine/core';
+import { useDisclosure } from '@mantine/hooks';
 import { Login } from './Login';
+import { Navbar } from './Navbar';
 import { Project } from './Project';
 import { Projects } from './Projects';
 import { Workspace } from './Workspace';
@@ -44,7 +36,7 @@ export function App() {
   }
 
   return (
-    <Shell username={session.username} signOut={signOut}>
+    <Shell route={route} username={session.username} signOut={signOut}>
       <Routes route={route} username={session.username} onSignedOut={refresh} />
     </Shell>
   );
@@ -90,21 +82,34 @@ function Routes({
 }
 
 function Shell({
+  route,
   username,
   signOut,
   children,
 }: {
+  route: Route;
   username: string;
   signOut: () => Promise<void>;
   children: React.ReactNode;
 }) {
+  const [opened, { toggle, close }] = useDisclosure();
+
+  // On a narrow screen the navbar is a drawer; following a link inside it
+  // should close it rather than leave it covering what was just opened.
+  useEffect(close, [route, close]);
+
   return (
-    <AppShell header={{ height: 64 }} padding="md">
+    <AppShell
+      header={{ height: 56 }}
+      navbar={{ width: 300, breakpoint: 'sm', collapsed: { mobile: !opened } }}
+      padding="md"
+    >
       <AppShell.Header>
-        <Group h="100%" px="md" justify="space-between">
+        <Group h="100%" px="md" gap="sm">
+          <Burger opened={opened} onClick={toggle} hiddenFrom="sm" size="sm" />
           <Anchor
             fw={700}
-            size="xl"
+            size="lg"
             underline="never"
             c="inherit"
             href={projectsPath()}
@@ -115,35 +120,14 @@ function Shell({
           >
             Canvas
           </Anchor>
-          <Group gap="xs">
-            <Text size="sm" c="dimmed">
-              {username}
-            </Text>
-            <ColorSchemeToggle />
-            <Tooltip label="Sign out">
-              <ActionIcon
-                variant="default"
-                size="lg"
-                onClick={() => void signOut()}
-                aria-label="Sign out"
-              >
-                <svg
-                  width="18"
-                  height="18"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
-                </svg>
-              </ActionIcon>
-            </Tooltip>
-          </Group>
+          <Text size="sm" c="dimmed" ml="auto">
+            {username}
+          </Text>
         </Group>
       </AppShell.Header>
+      <AppShell.Navbar>
+        <Navbar route={route} username={username} signOut={signOut} />
+      </AppShell.Navbar>
       <AppShell.Main>{children}</AppShell.Main>
     </AppShell>
   );

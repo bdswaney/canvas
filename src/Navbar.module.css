@@ -1,0 +1,95 @@
+/*
+ * Two columns: a rail of the three places Canvas has, and the contents of
+ * whichever one is selected. Mantine's own CSS variables are used directly
+ * because this project has no postcss-preset-mantine, so the dark scheme is
+ * addressed through the attribute Mantine puts on the root rather than
+ * through its mixins.
+ */
+.navbar {
+  display: flex;
+  height: 100%;
+  background-color: var(--mantine-color-body);
+}
+
+.aside {
+  flex: 0 0 60px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 0;
+  border-right: 1px solid var(--mantine-color-default-border);
+}
+
+/* Account actions sit at the foot of the rail, away from navigation. */
+.asideFooter {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.mainLink {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--mantine-radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--mantine-color-dimmed);
+}
+
+.mainLink:hover {
+  background-color: var(--mantine-color-default-hover);
+}
+
+.mainLink[data-active] {
+  background-color: var(--mantine-primary-color-light);
+  color: var(--mantine-primary-color-light-color);
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.title {
+  padding: 8px 12px 12px;
+}
+
+.link {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--mantine-radius-sm);
+  font-size: var(--mantine-font-size-sm);
+  color: var(--mantine-color-text);
+  text-decoration: none;
+  /* Long document names truncate rather than widening the navbar. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link:hover {
+  background-color: var(--mantine-color-default-hover);
+}
+
+.link[data-active] {
+  background-color: var(--mantine-primary-color-filled);
+  color: var(--mantine-color-white);
+}
+
+.link[data-active]:hover {
+  background-color: var(--mantine-primary-color-filled-hover);
+}
+
+.empty {
+  padding: 8px 12px;
+  font-size: var(--mantine-font-size-sm);
+  color: var(--mantine-color-dimmed);
+}

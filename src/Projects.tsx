@@ -12,6 +12,7 @@ import {
   TextInput,
   Title,
 } from '@mantine/core';
+import { IconPlus } from '@tabler/icons-react';
 import { Archive } from './Archive';
 import { Link } from './Link';
 import { projectPath } from './routes';
@@ -58,7 +59,12 @@ export function Projects({ onOpen }: { onOpen: (project: Project) => void }) {
               onChange={(event) => setName(event.currentTarget.value)}
               style={{ flex: 1 }}
             />
-            <Button type="submit" loading={busy} disabled={name.trim() === ''}>
+            <Button
+              type="submit"
+              loading={busy}
+              disabled={name.trim() === ''}
+              leftSection={<IconPlus size={16} stroke={1.5} />}
+            >
               Create
             </Button>
           </Group>
