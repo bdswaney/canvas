@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 
+	"github.com/cccteam/ccc"
 	"github.com/cccteam/session"
 	"github.com/cccteam/session/sessioninfo"
 	"github.com/cccteam/session/sessionstorage"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -49,6 +52,10 @@ type authenticator interface {
 // passwordAuth adapts the session package's PasswordAuth to authenticator.
 type passwordAuth struct {
 	*session.PasswordAuth[session.NoCustomData, session.NoCustomData]
+	// pool is the same one the session storage uses. Account administration
+	// needs to look a user up by name, which the package's API does not
+	// expose: everything there is keyed by id.
+	pool *pgxpool.Pool
 }
 
 // newPasswordAuth builds username/password authentication over the app's own
@@ -63,7 +70,7 @@ func newPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*passwordAuth, error
 	if err != nil {
 		return nil, fmt.Errorf("configure password authentication: %w", err)
 	}
-	return &passwordAuth{PasswordAuth: auth}, nil
+	return &passwordAuth{PasswordAuth: auth, pool: pool}, nil
 }
 
 func (a *passwordAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
@@ -92,6 +99,30 @@ func (a *passwordAuth) createUser(ctx context.Context, username, password string
 		Password: &password,
 	}); err != nil {
 		return fmt.Errorf("create user %q: %w", username, err)
+	}
+	return nil
+}
+
+// deleteUser removes an account by name and destroys its sessions. Rows that
+// reference "SessionUsers" hold the id, so anything the account authored has
+// to be dealt with first; the foreign key refuses the delete otherwise, which
+// is the point of storing the id rather than the name.
+func (a *passwordAuth) deleteUser(ctx context.Context, username string) error {
+	var id string
+	err := a.pool.QueryRow(ctx,
+		`SELECT "Id" FROM "SessionUsers" WHERE "Username" = $1`, username).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("no user named %q", username)
+	}
+	if err != nil {
+		return fmt.Errorf("look up user %q: %w", username, err)
+	}
+	userID, err := ccc.UUIDFromString(id)
+	if err != nil {
+		return fmt.Errorf("parse user id %q: %w", id, err)
+	}
+	if err := a.API().DeleteSessionUser(ctx, userID); err != nil {
+		return fmt.Errorf("delete user %q: %w", username, err)
 	}
 	return nil
 }

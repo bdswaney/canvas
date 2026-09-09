@@ -119,6 +119,15 @@ func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
 		}
 		log.Printf("Created user %s", args[1])
 		return nil
+	case "deleteuser":
+		if len(args) != 2 {
+			return errors.New("usage: canvas deleteuser <username>")
+		}
+		if err := auth.deleteUser(ctx, args[1]); err != nil {
+			return err
+		}
+		log.Printf("Deleted user %s", args[1])
+		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

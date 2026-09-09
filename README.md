@@ -150,6 +150,8 @@ mise run createuser alice hunter2hunter2
 
 That leaves the password in shell history and in `ps` output, which is acceptable for bootstrapping a development database and not for anything else.
 
+Removing one is `mise run deleteuser alice`, which deletes the account and expires its sessions. It will refuse while anything still references the account: saved versions hold the author's `SessionUsers.Id`, and the foreign key is what keeps history honest, so reassign or delete that work first.
+
 Endpoints live under `/api/session`: `GET` reports who you are, `POST` signs in, `DELETE` signs out. Set `COOKIE_KEY` to base64 of at least 32 random bytes (`head -c 32 /dev/urandom | base64`); leave it unset and the session package generates one at startup and prints it, which invalidates every session on restart.
 
 Three things about this integration are easy to trip over:
