@@ -44,15 +44,15 @@ mise run build      # type-check and build into dist/
 mise run preview    # serve the existing build locally (not for production)
 ```
 
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` contains the initial UI. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which hands out a named `Y.Text`. `src/api.ts` and `src/useSession.ts` handle sign-in and keep the session alive, `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
+`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` holds the session gate and the one route shape the app has, `/doc/<id>`; `src/DocPicker.tsx` lists and creates documents and `src/Workspace.tsx` is the editor, preview, save button, and history drawer. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which hands out a named `Y.Text`. `src/api.ts` and `src/useSession.ts` handle sign-in and keep the session alive, `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
 
 `mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
 
 ## Collaboration relay
 
-`/api/sync/{room}` is a WebSocket endpoint speaking the y-websocket protocol. The room name comes from the first path segment of the page URL, so `/notes` and `/sketches` are separate documents and `/` is the `default` room.
+`/api/sync/doc/{docID}` is a WebSocket endpoint speaking the y-websocket protocol, one socket per document. A socket for a document that does not exist is closed with code 4404 rather than conjuring a journal nothing can read.
 
-The server does not interpret document contents. It keeps an append-only log of Yjs updates per room, replays that log to each joining client, and broadcasts every new update to the room's other clients. Yjs updates are idempotent and commutative, so replaying the log reconstructs the document. Awareness (presence) frames are relayed but never stored.
+The server does not interpret document contents. It keeps an append-only journal of Yjs updates per document, replays that journal to each joining client, and broadcasts every new update to the document's other clients. Yjs updates are idempotent and commutative, so replaying the log reconstructs the document. Awareness (presence) frames are relayed but never stored.
 
 ```
 client                                  server
@@ -63,7 +63,7 @@ client                                  server
   |  <-> update / awareness ------------->|   relayed to the other clients
 ```
 
-The log is unbounded: rooms grow with every keystroke and are never compacted. Measured on a room with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
+The journal is unbounded: documents grow with every keystroke and are never compacted. Saving does **not** trim it — see the note under Saving below. Measured on a room with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
 
 ## Editing and carets
 
@@ -93,9 +93,32 @@ Every client publishes an identity and its pointer position on the awareness cha
 
 A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
 
+## Documents, saving, and history
+
+A document belongs to a project and has an immutable history of saved versions. Editing is live for everyone in the document, but nothing enters that history until someone saves.
+
+```
+GET    /api/docs                     list documents
+POST   /api/docs                     create one
+GET    /api/docs/{id}                metadata, including the hash of the last saved artifact
+POST   /api/docs/{id}/save           commit a version
+GET    /api/docs/{id}/versions       history, newest first
+POST   /api/docs/{id}/restore/{n}    hand back version n's artifact
+```
+
+**Saves are client-authored**, because the Go server has no Yjs and cannot merge updates or encode a snapshot. A save carries two things: the `artifact` (the Markdown text, which is what history stores and people read) and a `snapshot` (`Y.encodeStateAsUpdate`, the CRDT state it came from). Both are read in the same tick — the preview's debounced snapshot would store history that disagrees with the document. The version number is assigned by the server as `current_version + 1` in the same transaction that writes the row, so two clients saving at once cannot collide.
+
+**Saving deletes nothing from the journal.** Trimming it is only a size optimization — replay is idempotent, so stale rows cost bytes — and it cannot be done correctly yet: it needs to know which rows the saving client had seen, and nothing in the y-websocket protocol carries row ids. Adding a data-loss risk to save space we have already decided to spend is the wrong trade, so the snapshot is written for restore, and replay stays journal-only.
+
+**Whether a document has unsaved changes is a client-side hash comparison** of the current text against `doc_state.artifact_sha256`. The tempting server-side test — "the journal has rows" — is wrong three ways: rows outlive a save, a word typed and deleted leaves rows with identical text, and merely opening a document appends a full sync frame, so every document would read dirty with no edits at all.
+
+**Restoring hands the artifact back to the client**, which writes it into the live document and saves the result as a new version. The server cannot rebuild CRDT state from text, and history is never rewritten.
+
+People are referenced by `SessionUsers.Id` and never by username, because usernames are mutable — the session package renames them in place. The username is joined in for display.
+
 ## Persistence
 
-Update logs are stored in Postgres in a single `room_updates` table. `DATABASE_URL` is required: accounts and room history both live there.
+Documents, their saved versions, and their update journals are stored in Postgres. `DATABASE_URL` is required: accounts and room history both live there.
 
 ```sh
 mise run db       # start a local Postgres container on 127.0.0.1:5432

@@ -138,7 +138,7 @@ func origins() []string {
 	return patterns
 }
 
-func roomName(r *http.Request) string { return chi.URLParam(r, "room") }
+func docID(r *http.Request) string { return chi.URLParam(r, "docID") }
 
 func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticator) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
@@ -166,11 +166,17 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticato
 			r.With(auth.ValidateSession, auth.ValidateXSRFToken).Delete("/", auth.Logout())
 		})
 
+		api.Group(func(r chi.Router) {
+			r.Use(auth.ValidateSession)
+			r.Use(auth.ValidateXSRFToken)
+			r.Route("/docs", (&docAPI{store: h.store, hub: h, auth: auth}).routes)
+		})
+
 		// Collaboration sockets: authenticated, but no XSRF check. A browser
 		// cannot set headers on a WebSocket handshake. What protects this is
 		// the session cookie being SameSite=Strict, so a cross-site handshake
 		// carries no cookie at all, with the Origin check behind it.
-		api.Get("/sync/{room}", h.syncHandler(originPatterns, auth))
+		api.Get("/sync/doc/{docID}", h.syncHandler(originPatterns, auth))
 	})
 	// Unrouted paths are client-side routes, static files, or genuine 404s.
 	spa := serveApp(assets, index)

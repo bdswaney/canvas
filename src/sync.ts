@@ -7,25 +7,27 @@ import { WebsocketProvider } from 'y-websocket';
 // terminates TLS keeps working: derive the scheme from the page.
 export function relayURL(location: Location = window.location): string {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${location.host}/api/sync`;
+  return `${protocol}//${location.host}/api/sync/doc`;
 }
 
-// Rooms are named by the first path segment, so /notes and /sketches are
-// separate documents and a bare / is the default room.
-export function roomName(pathname: string = window.location.pathname): string {
-  const segment = pathname.split('/').filter(Boolean)[0] ?? 'default';
-  return /^[A-Za-z0-9._-]{1,64}$/.test(segment) ? segment : 'default';
+// A document is addressed by id: /doc/<uuid>. Anything else means no document
+// is open yet and the app shows the picker instead.
+export function docIdFromPath(pathname: string = window.location.pathname): string | null {
+  const [prefix, id] = pathname.split('/').filter(Boolean);
+  if (prefix !== 'doc' || !id) return null;
+  return /^[A-Za-z0-9-]{1,64}$/.test(id) ? id : null;
 }
 
 export type Status = 'connecting' | 'connected' | 'disconnected';
 
-// Matches statusUnauthenticated in sync.go.
+// Matches statusUnauthenticated and statusUnknownDoc in sync.go. Both are in
+// the range y-websocket treats as permanent.
 const signedOutCloseCode = 4401;
 
 export type Connection = {
   doc: Y.Doc;
   awareness: Awareness;
-  room: string;
+  docID: string;
   status: Status;
   synced: boolean;
   peers: number;
@@ -33,7 +35,7 @@ export type Connection = {
 
 // useSync owns one document and its relay connection for the component's
 // lifetime, and re-renders on connection, sync, and presence changes.
-export function useSync(room: string = roomName(), onSignedOut?: () => void): Connection {
+export function useSync(docID: string, onSignedOut?: () => void): Connection {
   const [doc] = useState(() => new Y.Doc());
   // Awareness outlives any single provider, so presence state set by the UI
   // survives a reconnect and StrictMode's double mount.
@@ -46,7 +48,7 @@ export function useSync(room: string = roomName(), onSignedOut?: () => void): Co
   // double mount tears its socket down and opens a fresh one, instead of
   // leaving the component holding a destroyed provider.
   useEffect(() => {
-    const provider = new WebsocketProvider(relayURL(), room, doc, { awareness });
+    const provider = new WebsocketProvider(relayURL(), docID, doc, { awareness });
     const onStatus = (event: { status: Status }) => setStatus(event.status);
     const onSync = (isSynced: boolean) => setSynced(isSynced);
     const onAwareness = () => setPeers(awareness.getStates().size);
@@ -73,9 +75,9 @@ export function useSync(room: string = roomName(), onSignedOut?: () => void): Co
       setSynced(false);
       setPeers(1);
     };
-  }, [awareness, doc, onSignedOut, room]);
+  }, [awareness, doc, docID, onSignedOut]);
 
-  return { doc, awareness, room, status, synced, peers };
+  return { doc, awareness, docID, status, synced, peers };
 }
 
 // useSharedText hands out one named Y.Text for the document's lifetime.
