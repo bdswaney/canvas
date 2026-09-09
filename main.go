@@ -26,7 +26,9 @@ import (
 var frontend embed.FS
 
 // Tunnels terminate TLS and present their own Host, so their origins have to
-// be allowed explicitly. Override with ORIGINS (comma separated).
+// be allowed explicitly. These wildcards accept any tunnel anybody can create
+// on those services, which is fine while developing behind one and is not
+// something to deploy: set ORIGINS, which replaces them entirely.
 var defaultOrigins = []string{"*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.app", "*.ngrok.io"}
 
 // Session rows are timestamp-without-time-zone: the session store writes
@@ -73,7 +75,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(store), origins(), auth)
+	originPatterns, err := origins()
+	if err != nil {
+		log.Fatal(err)
+	}
+	handler, err := newHandler(assets, newHub(store), originPatterns, auth)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -133,10 +139,20 @@ func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
 	}
 }
 
-func origins() []string {
+// origins returns the allowed WebSocket origins. ORIGINS is required unless
+// CANVAS_ENV names a development environment: the wildcard fallback would
+// otherwise let any tunnel on those hosts open a socket, which is a
+// development convenience that must not reach a deployment.
+func origins() ([]string, error) {
 	value := os.Getenv("ORIGINS")
 	if value == "" {
-		return defaultOrigins
+		if env := os.Getenv("CANVAS_ENV"); env != "" && env != "development" {
+			return nil, fmt.Errorf("ORIGINS is required when CANVAS_ENV is %q: "+
+				"the development fallback allows any tunnel host", env)
+		}
+		log.Printf("ORIGINS is unset; allowing tunnel hosts %v. Set ORIGINS before deploying.",
+			defaultOrigins)
+		return defaultOrigins, nil
 	}
 	var patterns []string
 	for _, pattern := range strings.Split(value, ",") {
@@ -144,7 +160,10 @@ func origins() []string {
 			patterns = append(patterns, pattern)
 		}
 	}
-	return patterns
+	if len(patterns) == 0 {
+		return nil, errors.New("ORIGINS is set but lists no origins")
+	}
+	return patterns, nil
 }
 
 func docID(r *http.Request) string { return chi.URLParam(r, "docID") }

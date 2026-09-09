@@ -165,7 +165,7 @@ Schema lives in `migrations/`, embedded in the binary and applied at startup wit
 
 The app set depends on the session set: `doc_versions.author_id` and `project_members.user_id` both reference `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
 
-`SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The development container is already `postgres:18-alpine`; check any other deployment target before the first migration runs.
+`SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The server checks `server_version_num` before running any migration and refuses to start on anything older, because otherwise the failure arrives partway through the session migrations as a syntax error pointing at the wrong thing. The development container is already `postgres:18-alpine`.
 
 ## Membership
 
@@ -243,7 +243,7 @@ mise run tunnel   # ngrok http 8080; set PORT to expose a different port
 
 The client derives its WebSocket scheme from the page, so the relay works over a tunnel's HTTPS origin without configuration. The server checks the `Origin` header against the request host and additionally allows `*.ngrok-free.dev`, `*.ngrok-free.app`, `*.ngrok.app`, and `*.ngrok.io`. Set `ORIGINS` (comma separated) to allow a different set. Keep `ADDR` on loopback; ngrok connects from the same machine.
 
-Those ngrok defaults are a development convenience and must not ship to a deployment: they let a page on any ngrok subdomain open a handshake. Set `ORIGINS` explicitly there.
+Those ngrok defaults are a development convenience: they let a page on any ngrok subdomain open a handshake. **`ORIGINS` is required unless `CANVAS_ENV` is unset or `development`** — the server refuses to start otherwise rather than falling back to the wildcards. In development it uses them and says so in the log.
 
 ## Go server and deep links
 
