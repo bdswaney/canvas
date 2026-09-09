@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { IconFileText, IconLayersIntersect, IconLogout } from '@tabler/icons-react';
 import { ActionIcon, Loader, Title, Tooltip, UnstyledButton } from '@mantine/core';
-import { ColorSchemeToggle } from './ColorSchemeToggle';
-import { getDoc, listDocs, type Doc } from './docs';
-import { listProjects, useRefetched, type Project } from './projects';
+import { ColorSchemeToggle } from '../components/ColorSchemeToggle';
+import { getDoc, listDocs, type Doc } from '../api/docs';
+import { listProjects, useRefetched, type Project } from '../api/projects';
 import { docPath, navigate, projectPath, projectsPath, type Route } from './routes';
 import classes from './Navbar.module.css';
 

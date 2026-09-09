@@ -40,6 +40,19 @@ Selecting in the rail and following a link both move it: the route leads and the
 
 The navbar is navigation; a project's own page is where things are created, archived, and its members managed.
 
+The frontend is grouped the same way the server is:
+
+| Folder | Holds |
+|---|---|
+| `src/app` | the shell, the navbar, and routing |
+| `src/api` | the fetch wrapper, the session, and one module per resource |
+| `src/collab` | the Yjs layer: the provider, awareness, and remote pointers |
+| `src/editor` | CodeMirror, the Markdown preview, and their styling |
+| `src/components` | pieces used on more than one screen |
+| `src/pages` | one file per route |
+
+`src/api/client.ts` is the fetch wrapper and nothing else; `src/api/session.ts` is the session calls together with the hook over them, which were previously split across two files for no reason.
+
 Icons come from `@tabler/icons-react`, imported by name so the bundle carries only the ones used — verified by checking that a used glyph is present in the built asset and an unused one is not.
 
 The Go binary embeds `dist/`, and `go:embed` has twice served a stale copy in this repo after a rebuild. After `mise run build:server`, confirm the binary really has the current frontend:

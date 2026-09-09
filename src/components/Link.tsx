@@ -1,5 +1,5 @@
 import { Anchor, type AnchorProps } from '@mantine/core';
-import { navigate } from './routes';
+import { navigate } from '../app/routes';
 
 /**
  * Link is an in-app anchor: a real href, so it can be middle-clicked, opened

@@ -4,8 +4,6 @@
 const xsrfCookieName = 'XSRF-TOKEN';
 const xsrfHeaderName = 'X-XSRF-TOKEN';
 
-export type Session = { authenticated: boolean; username: string };
-
 function readCookie(name: string): string | null {
   const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
   return match ? decodeURIComponent(match[1]) : null;
@@ -43,7 +41,7 @@ export async function apiRequest(path: string, init: RequestInit = {}): Promise<
 }
 
 // The server reports failures as {message, traceID}; fall back to the status.
-async function errorMessage(response: Response): Promise<string> {
+export async function errorMessage(response: Response): Promise<string> {
   try {
     const body = (await response.json()) as { message?: string };
     if (body.message) return body.message;
@@ -51,23 +49,4 @@ async function errorMessage(response: Response): Promise<string> {
     // A non-JSON error body is not worth surfacing verbatim.
   }
   return `Request failed (${response.status})`;
-}
-
-export async function fetchSession(): Promise<Session> {
-  const response = await apiRequest('/api/session');
-  if (!response.ok) return { authenticated: false, username: '' };
-  return (await response.json()) as Session;
-}
-
-export async function login(username: string, password: string): Promise<void> {
-  const response = await apiRequest('/api/session', {
-    method: 'POST',
-    body: JSON.stringify({ username, password }),
-  });
-  if (!response.ok) throw new Error(await errorMessage(response));
-}
-
-export async function logout(): Promise<void> {
-  const response = await apiRequest('/api/session', { method: 'DELETE' });
-  if (!response.ok) throw new Error(await errorMessage(response));
 }
