@@ -23,6 +23,7 @@ import { Editor } from './Editor';
 import { Preview } from './Preview';
 import { listVersions, restoreVersion, saveDoc, sha256Base64, useDoc, type Version } from './docs';
 import { usePresence } from './presence';
+import { IconArrowBackUp, IconDeviceFloppy, IconHistory } from '@tabler/icons-react';
 import { useSharedText, useSync, useTextSnapshot, type Status } from './sync';
 
 // sha256 of the empty string, base64. A document that has never been saved
@@ -174,7 +175,12 @@ export function Workspace({
                     </Text>
                   </Table.Td>
                   <Table.Td align="right">
-                    <Button size="compact-sm" variant="light" onClick={() => void restore(version.version)}>
+                    <Button
+                      size="compact-sm"
+                      variant="light"
+                      leftSection={<IconArrowBackUp size={15} stroke={1.5} />}
+                      onClick={() => void restore(version.version)}
+                    >
                       Restore
                     </Button>
                   </Table.Td>
@@ -204,10 +210,19 @@ export function Workspace({
               <Badge variant="light" color={dirty ? 'orange' : 'gray'}>
                 {dirty ? 'unsaved changes' : 'saved'}
               </Badge>
-              <Button variant="default" onClick={() => void openHistory()}>
+              <Button
+                variant="default"
+                leftSection={<IconHistory size={16} stroke={1.5} />}
+                onClick={() => void openHistory()}
+              >
                 History
               </Button>
-              <Button onClick={() => void save()} loading={saving} disabled={!dirty}>
+              <Button
+                onClick={() => void save()}
+                loading={saving}
+                disabled={!dirty}
+                leftSection={<IconDeviceFloppy size={16} stroke={1.5} />}
+              >
                 Save
               </Button>
             </Group>

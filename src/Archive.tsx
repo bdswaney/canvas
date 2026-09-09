@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { IconArchive } from '@tabler/icons-react';
 import { Alert, Button, Stack } from '@mantine/core';
 
 /**
@@ -55,6 +56,7 @@ export function Archive({
         variant="subtle"
         color={asked ? 'red' : 'gray'}
         loading={busy}
+        leftSection={<IconArchive size={15} stroke={1.5} />}
         onClick={() => void run()}
       >
         {asked ? `Archive this ${what}?` : 'Archive'}

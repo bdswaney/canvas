@@ -13,6 +13,7 @@ import {
   Title,
 } from '@mantine/core';
 import { createDoc, listDocs, type Doc } from './docs';
+import { IconFileText, IconPlus } from '@tabler/icons-react';
 import { Archive } from './Archive';
 import { Members } from './Members';
 import { archiveDoc, useRefetched } from './projects';
@@ -33,7 +34,12 @@ export function Project({
     <Container size="md" py="xl">
       <Stack gap="xl">
         <Stack>
-          <Title order={2}>Documents</Title>
+          <Title order={2}>
+            <Group gap="xs">
+              <IconFileText size={22} stroke={1.5} />
+              Documents
+            </Group>
+          </Title>
           {docs.error && (
             <Alert color="red" variant="light">
               {docs.error}
@@ -122,7 +128,12 @@ export function Creator({
             onChange={(event) => setName(event.currentTarget.value)}
             style={{ flex: 1 }}
           />
-          <Button type="submit" loading={busy} disabled={name.trim() === ''}>
+          <Button
+            type="submit"
+            loading={busy}
+            disabled={name.trim() === ''}
+            leftSection={<IconPlus size={16} stroke={1.5} />}
+          >
             Create
           </Button>
         </Group>
