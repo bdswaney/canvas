@@ -1,4 +1,6 @@
-package main
+// Package migrate owns the database schema: the migration files, embedded so
+// the binary carries them, and the runner that applies them at startup.
+package migrate
 
 import (
 	"context"
@@ -61,9 +63,9 @@ func checkPostgresVersion(ctx context.Context, databaseURL string) error {
 	return nil
 }
 
-// migrateDatabase brings every migration set up to date. It is safe to run on
-// every start: sets already at their newest version are no-ops.
-func migrateDatabase(databaseURL string) error {
+// Run brings every migration set up to date. It is safe to run on every
+// start: sets already at their newest version are no-ops.
+func Run(databaseURL string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := checkPostgresVersion(ctx, databaseURL); err != nil {

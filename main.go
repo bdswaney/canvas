@@ -6,6 +6,9 @@ import (
 	"embed"
 	"errors"
 	"fmt"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/migrate"
+	"github.com/bdswaney/canvas/internal/store"
 	"io/fs"
 	"log"
 	"net/http"
@@ -31,12 +34,6 @@ var frontend embed.FS
 // something to deploy: set ORIGINS, which replaces them entirely.
 var defaultOrigins = []string{"*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.app", "*.ngrok.io"}
 
-// Session rows are timestamp-without-time-zone: the session store writes
-// wall-clock local time and reads it back as UTC. Anywhere but UTC that skew
-// makes every session look hours old and instantly expired. This is an init so
-// the test binary is pinned too, not only the server.
-func init() { time.Local = time.UTC }
-
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -45,19 +42,19 @@ func main() {
 	if databaseURL == "" {
 		log.Fatal("DATABASE_URL is required: accounts and document history live in Postgres")
 	}
-	if err := migrateDatabase(databaseURL); err != nil {
+	if err := migrate.Run(databaseURL); err != nil {
 		log.Fatal(err)
 	}
 
 	connect, cancelConnect := context.WithTimeout(ctx, 10*time.Second)
-	store, err := NewPostgresStore(connect, databaseURL)
+	db, err := store.NewPostgresStore(connect, databaseURL)
 	cancelConnect()
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer store.Close()
+	defer db.Close()
 
-	auth, err := newPasswordAuth(store.Pool(), os.Getenv("COOKIE_KEY"))
+	authn, err := auth.NewPasswordAuth(db.Pool(), os.Getenv("COOKIE_KEY"))
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -65,7 +62,7 @@ func main() {
 	// canvas createuser <username> <password> makes the first account, which
 	// cannot come through the API because that route requires a session.
 	if len(os.Args) > 1 {
-		if err := runCommand(ctx, auth, os.Args[1:]); err != nil {
+		if err := runCommand(ctx, authn, os.Args[1:]); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -79,7 +76,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(store), originPatterns, auth)
+	handler, err := newHandler(assets, newHub(db), originPatterns, authn)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -110,7 +107,7 @@ func main() {
 
 // runCommand handles the few one-shot administrative commands. Anything that
 // needs a running server does not belong here.
-func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
+func runCommand(ctx context.Context, authn *auth.PasswordAuth, args []string) error {
 	switch args[0] {
 	case "migrate":
 		// Migrations already ran before this switch; nothing left to do.
@@ -120,7 +117,7 @@ func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
 		if len(args) != 3 {
 			return errors.New("usage: canvas createuser <username> <password>")
 		}
-		if err := auth.createUser(ctx, args[1], args[2]); err != nil {
+		if err := authn.CreateUser(ctx, args[1], args[2]); err != nil {
 			return err
 		}
 		log.Printf("Created user %s", args[1])
@@ -129,7 +126,7 @@ func runCommand(ctx context.Context, auth *passwordAuth, args []string) error {
 		if len(args) != 2 {
 			return errors.New("usage: canvas deleteuser <username>")
 		}
-		if err := auth.deleteUser(ctx, args[1]); err != nil {
+		if err := authn.DeleteUser(ctx, args[1]); err != nil {
 			return err
 		}
 		log.Printf("Deleted user %s", args[1])
@@ -168,7 +165,7 @@ func origins() ([]string, error) {
 
 func docID(r *http.Request) string { return chi.URLParam(r, "docID") }
 
-func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticator) (http.Handler, error) {
+func newHandler(assets fs.FS, h *hub, originPatterns []string, authn auth.Authenticator) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read frontend entry point: %w", err)
@@ -179,26 +176,26 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticato
 	router.Route("/api", func(api chi.Router) {
 		// Every API route needs the session cookie read and an XSRF token
 		// issued; SetXSRFToken depends on StartSession having run.
-		api.Use(auth.StartSession)
-		api.Use(auth.SetXSRFToken)
+		api.Use(authn.StartSession)
+		api.Use(authn.SetXSRFToken)
 
 		api.Route("/session", func(r chi.Router) {
 			// Login cannot sit behind ValidateSession: there is no session
 			// yet. GET reports who you are and doubles as the call that
 			// primes the XSRF cookie and keeps a session alive while someone
 			// is editing over a WebSocket and making no other requests.
-			r.Get("/", auth.Authenticated())
-			r.Post("/", auth.Login())
+			r.Get("/", authn.Authenticated())
+			r.Post("/", authn.Login())
 			// Signing out changes state, so it carries the XSRF check that
 			// every future write endpoint will use.
-			r.With(auth.ValidateSession, auth.ValidateXSRFToken).Delete("/", auth.Logout())
+			r.With(authn.ValidateSession, authn.ValidateXSRFToken).Delete("/", authn.Logout())
 		})
 
 		api.Group(func(r chi.Router) {
-			r.Use(auth.ValidateSession)
-			r.Use(auth.ValidateXSRFToken)
-			projects := &projectAPI{store: h.store, auth: auth}
-			r.Route("/docs", (&docAPI{store: h.store, auth: auth}).routes)
+			r.Use(authn.ValidateSession)
+			r.Use(authn.ValidateXSRFToken)
+			projects := &projectAPI{store: h.store, auth: authn}
+			r.Route("/docs", (&docAPI{store: h.store, auth: authn}).routes)
 			r.Route("/projects", projects.projectRoutes)
 			r.Get("/users", projects.listUsers)
 		})
@@ -207,7 +204,7 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticato
 		// cannot set headers on a WebSocket handshake. What protects this is
 		// the session cookie being SameSite=Strict, so a cross-site handshake
 		// carries no cookie at all, with the Origin check behind it.
-		api.Get("/sync/doc/{docID}", h.syncHandler(originPatterns, auth))
+		api.Get("/sync/doc/{docID}", h.syncHandler(originPatterns, authn))
 	})
 	// Unrouted paths are client-side routes, static files, or genuine 404s.
 	spa := serveApp(assets, index)

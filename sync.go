@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/lib0"
+	"github.com/bdswaney/canvas/internal/store"
 	"log"
 	"net/http"
 	"regexp"
@@ -83,13 +86,13 @@ type docSession struct {
 // hub owns the live document sessions. A session is dropped when its last
 // client leaves; the durable log in the store outlives it.
 type hub struct {
-	store Store
+	store store.Store
 
 	mu       sync.Mutex
 	sessions map[string]*docSession
 }
 
-func newHub(store Store) *hub {
+func newHub(store store.Store) *hub {
 	return &hub{store: store, sessions: map[string]*docSession{}}
 }
 
@@ -182,11 +185,11 @@ func (r *docSession) broadcast(sender *client, frame []byte) {
 }
 
 func syncFrame(subType uint64, payload []byte) []byte {
-	return appendVarBytes(appendVarUint(appendVarUint(nil, messageSync), subType), payload)
+	return lib0.AppendVarBytes(lib0.AppendVarUint(lib0.AppendVarUint(nil, messageSync), subType), payload)
 }
 
 // syncHandler serves the collaboration socket for one document.
-func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.HandlerFunc {
+func (h *hub) syncHandler(originPatterns []string, authn auth.Authenticator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		name := docID(r)
 		if !idPattern.MatchString(name) {
@@ -206,7 +209,7 @@ func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.Hand
 		// so that an expired session closes the socket with a code the client
 		// treats as final. A rejected handshake looks like a network failure,
 		// and y-websocket would reconnect against it forever.
-		ctx, err := auth.ValidateSessionCtx(r.Context())
+		ctx, err := authn.ValidateSessionCtx(r.Context())
 		if err != nil {
 			conn.Close(statusUnauthenticated, "session expired")
 			return
@@ -223,7 +226,7 @@ func (h *hub) syncHandler(originPatterns []string, auth authenticator) http.Hand
 		// The real gate: a document is reachable only by members of its
 		// project. This is the same rule the REST handlers apply, checked
 		// here because a live socket bypasses them entirely.
-		user, _ := auth.UserFromCtx(ctx)
+		user, _ := authn.UserFromCtx(ctx)
 		switch member, err := h.store.ProjectMember(ctx, doc.ProjectID, user.ID); {
 		case err != nil:
 			log.Printf("sync %s: membership check: %v", name, err)
@@ -292,8 +295,8 @@ func (h *hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
 }
 
 func (h *hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame []byte) error {
-	reader := &reader{buf: frame}
-	messageType, err := reader.varUint()
+	reader := lib0.NewReader(frame)
+	messageType, err := reader.VarUint()
 	if err != nil {
 		return nil // Ignore frames this server does not understand.
 	}
@@ -308,11 +311,11 @@ func (h *hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame 
 		return nil
 	}
 
-	subType, err := reader.varUint()
+	subType, err := reader.VarUint()
 	if err != nil {
 		return nil
 	}
-	payload, err := reader.varBytes()
+	payload, err := reader.VarBytes()
 	if err != nil {
 		return nil
 	}

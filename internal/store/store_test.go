@@ -1,9 +1,10 @@
-package main
+package store
 
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/bdswaney/canvas/internal/migrate"
 	"os"
 	"strings"
 	"testing"
@@ -12,7 +13,7 @@ import (
 
 func TestMemoryStoreCopiesUpdates(t *testing.T) {
 	store := NewMemoryStore()
-	doc, err := store.CreateDoc(context.Background(), defaultProjectID, "Notes")
+	doc, err := store.CreateDoc(context.Background(), DefaultProjectID, "Notes")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,14 +38,18 @@ func TestMemoryStoreCopiesUpdates(t *testing.T) {
 func TestStores(t *testing.T) {
 	t.Run("memory", func(t *testing.T) {
 		// The suite works as one person, who has to belong to both projects
-		// or every list it checks comes back empty.
-		user := stubUser().ID
-		store := newTestStore(t)
+		// or every list it checks comes back empty. The memory store has no
+		// accounts table, so any two distinct ids will do.
+		const user, stranger = "00000000-0000-4000-8000-00000000000f", "00000000-0000-4000-8000-0000000000aa"
+		store := NewMemoryStore()
+		if err := store.AddProjectMember(context.Background(), DefaultProjectID, user, ""); err != nil {
+			t.Fatal(err)
+		}
 		elsewhere, err := store.CreateProject(context.Background(), "Elsewhere", user)
 		if err != nil {
 			t.Fatal(err)
 		}
-		storeConformance(t, store, defaultProjectID, elsewhere.ID, user, outsiderID)
+		storeConformance(t, store, DefaultProjectID, elsewhere.ID, user, stranger)
 	})
 	t.Run("postgres", func(t *testing.T) {
 		store, projectID, elsewhereID, userID, strangerID := postgresFixture(t)
@@ -267,7 +272,7 @@ func postgresFixture(t *testing.T) (store *PostgresStore, projectID, elsewhereID
 	if url == "" {
 		t.Skip("DATABASE_URL is not set")
 	}
-	if err := migrateDatabase(url); err != nil {
+	if err := migrate.Run(url); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

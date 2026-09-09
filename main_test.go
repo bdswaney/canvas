@@ -1,6 +1,8 @@
 package main
 
 import (
+	"github.com/bdswaney/canvas/internal/auth/authtest"
+	"github.com/bdswaney/canvas/internal/store"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -15,7 +17,7 @@ func TestFrontendRouting(t *testing.T) {
 	handler, err := newHandler(fstest.MapFS{
 		"index.html":    {Data: []byte(index)},
 		"assets/app.js": {Data: []byte(script)},
-	}, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
+	}, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +70,7 @@ func TestFrontendRouting(t *testing.T) {
 }
 
 func TestMissingFrontendEntryPoint(t *testing.T) {
-	if _, err := newHandler(fstest.MapFS{}, newHub(NewMemoryStore()), nil, stubAuth{valid: true}); err == nil {
+	if _, err := newHandler(fstest.MapFS{}, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true}); err == nil {
 		t.Fatal("expected error for missing index.html")
 	}
 }
@@ -78,7 +80,7 @@ func TestEmbeddedFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := newHandler(assets, newHub(NewMemoryStore()), nil, stubAuth{valid: true})
+	handler, err := newHandler(assets, newHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}

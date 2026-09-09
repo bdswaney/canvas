@@ -1,4 +1,4 @@
-package main
+package lib0
 
 import (
 	"bytes"
@@ -8,7 +8,7 @@ import (
 func TestVarUintRoundTrip(t *testing.T) {
 	// Boundaries where the encoded length grows by one byte.
 	for _, value := range []uint64{0, 1, 127, 128, 129, 16383, 16384, 2097151, 2097152, 1 << 40} {
-		encoded := appendVarUint(nil, value)
+		encoded := AppendVarUint(nil, value)
 		if encoded[len(encoded)-1]&0x80 != 0 {
 			// Continuation bit must be clear on the final byte only.
 			for _, b := range encoded[:len(encoded)-1] {
@@ -17,8 +17,8 @@ func TestVarUintRoundTrip(t *testing.T) {
 				}
 			}
 		}
-		r := &reader{buf: encoded}
-		got, err := r.varUint()
+		r := NewReader(encoded)
+		got, err := r.VarUint()
 		if err != nil {
 			t.Fatalf("%d: %v", value, err)
 		}
@@ -40,7 +40,7 @@ func TestVarUintEncoding(t *testing.T) {
 		{128, []byte{0x80, 0x01}},
 		{16384, []byte{0x80, 0x80, 0x01}},
 	} {
-		if got := appendVarUint(nil, tt.value); !bytes.Equal(got, tt.want) {
+		if got := AppendVarUint(nil, tt.value); !bytes.Equal(got, tt.want) {
 			t.Errorf("%d encoded as % x, want % x", tt.value, got, tt.want)
 		}
 	}
@@ -48,11 +48,11 @@ func TestVarUintEncoding(t *testing.T) {
 
 func TestVarBytesRoundTrip(t *testing.T) {
 	payload := bytes.Repeat([]byte{0xab}, 300)
-	r := &reader{buf: appendVarBytes([]byte{0x09}, payload)}
-	if tag, err := r.varUint(); err != nil || tag != 9 {
+	r := NewReader(AppendVarBytes([]byte{0x09}, payload))
+	if tag, err := r.VarUint(); err != nil || tag != 9 {
 		t.Fatalf("tag = %d, %v", tag, err)
 	}
-	got, err := r.varBytes()
+	got, err := r.VarBytes()
 	if err != nil || !bytes.Equal(got, payload) {
 		t.Fatalf("payload mismatch: %v", err)
 	}
@@ -63,11 +63,11 @@ func TestVarBytesRoundTrip(t *testing.T) {
 
 func TestTruncatedMessages(t *testing.T) {
 	for _, buf := range [][]byte{{}, {0x80}, {0x00, 0x05, 0x01}} {
-		r := &reader{buf: buf}
-		if _, err := r.varUint(); err != nil {
+		r := NewReader(buf)
+		if _, err := r.VarUint(); err != nil {
 			continue
 		}
-		if _, err := r.varBytes(); err == nil {
+		if _, err := r.VarBytes(); err == nil {
 			t.Errorf("% x: expected error", buf)
 		}
 	}

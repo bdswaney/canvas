@@ -1,10 +1,15 @@
-package main
+// Package auth wires the session package in and defines the slice of it the
+// rest of the server depends on. Routing, the relay, and the API all take an
+// Authenticator rather than the concrete generic type, so tests substitute a
+// stub (see authtest) and exercise the wiring without a database.
+package auth
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/cccteam/ccc"
 	"github.com/cccteam/session"
@@ -21,10 +26,15 @@ type User struct {
 	Username string
 }
 
-// authenticator is the slice of the session package this app uses. Routing
-// depends on the interface rather than the concrete generic type so tests can
-// substitute a stub and exercise the wiring without a database.
-type authenticator interface {
+// Session rows are timestamp-without-time-zone: the session store writes
+// wall-clock local time and reads it back as UTC. Anywhere but UTC that skew
+// makes every session look hours old and instantly expired. This is an init
+// here, where the session package is wired, so that every binary importing
+// it — the server and every test that touches sessions — is pinned.
+func init() { time.Local = time.UTC }
+
+// Authenticator is the slice of the session package this app uses.
+type Authenticator interface {
 	// Middleware. StartSession reads the cookie; everything else needs it to
 	// have run first.
 	StartSession(next http.Handler) http.Handler
@@ -57,8 +67,8 @@ type authenticator interface {
 	Users(ctx context.Context) ([]User, error)
 }
 
-// passwordAuth adapts the session package's PasswordAuth to authenticator.
-type passwordAuth struct {
+// PasswordAuth adapts the session package's PasswordAuth to Authenticator.
+type PasswordAuth struct {
 	*session.PasswordAuth[session.NoCustomData, session.NoCustomData]
 	// pool is the same one the session storage uses. Account administration
 	// needs to look a user up by name, which the package's API does not
@@ -66,11 +76,11 @@ type passwordAuth struct {
 	pool *pgxpool.Pool
 }
 
-// newPasswordAuth builds username/password authentication over the app's own
+// NewPasswordAuth builds username/password authentication over the app's own
 // connection pool. cookieKey is base64 of at least 32 random bytes; empty
 // makes the session package generate one and print it, which is fine for
 // development but invalidates every session on restart.
-func newPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*passwordAuth, error) {
+func NewPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*PasswordAuth, error) {
 	auth, err := session.NewPasswordAuth[session.NoCustomData, session.NoCustomData](
 		sessionstorage.NewPostgresPassword(pool),
 		cookieKey,
@@ -78,7 +88,7 @@ func newPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*passwordAuth, error
 	if err != nil {
 		return nil, fmt.Errorf("configure password authentication: %w", err)
 	}
-	return &passwordAuth{PasswordAuth: auth, pool: pool}, nil
+	return &PasswordAuth{PasswordAuth: auth, pool: pool}, nil
 }
 
 // ValidateSessionCtx validates the session and returns a context carrying the
@@ -89,7 +99,7 @@ func newPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*passwordAuth, error
 // looks the account up and attaches it to the context. So this has to do that
 // part itself — without it UserFromCtx finds nothing, and the socket refuses
 // every member as a stranger.
-func (a *passwordAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
+func (a *PasswordAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
 	ctx, err := a.API().ValidateSession(ctx)
 	if err != nil {
 		return ctx, fmt.Errorf("validate session: %w", err)
@@ -129,7 +139,7 @@ func (a *passwordAuth) ValidateSessionCtx(ctx context.Context) (context.Context,
 
 // UserFromCtx reads the context value directly rather than calling
 // sessioninfo.UserFromCtx, which panics when the value is absent.
-func (a *passwordAuth) UserFromCtx(ctx context.Context) (User, bool) {
+func (a *PasswordAuth) UserFromCtx(ctx context.Context) (User, bool) {
 	info, ok := ctx.Value(sessioninfo.CtxUserInfo).(*sessioninfo.UserInfo)
 	if !ok {
 		return User{}, false
@@ -139,7 +149,7 @@ func (a *passwordAuth) UserFromCtx(ctx context.Context) (User, bool) {
 
 // Users lists every account, ordered by name. The session package keys
 // everything by id and offers no listing, so this reads the table directly.
-func (a *passwordAuth) Users(ctx context.Context) ([]User, error) {
+func (a *PasswordAuth) Users(ctx context.Context) ([]User, error) {
 	rows, err := a.pool.Query(ctx,
 		`SELECT "Id"::text, "Username" FROM "SessionUsers" WHERE NOT "Disabled" ORDER BY "Username"`)
 	if err != nil {
@@ -157,9 +167,9 @@ func (a *passwordAuth) Users(ctx context.Context) ([]User, error) {
 	return users, rows.Err()
 }
 
-// createUser adds a user account. The HTTP handler for this sits behind
+// CreateUser adds a user account. The HTTP handler for this sits behind
 // authentication, so the first account has to be made from the command line.
-func (a *passwordAuth) createUser(ctx context.Context, username, password string) error {
+func (a *PasswordAuth) CreateUser(ctx context.Context, username, password string) error {
 	if _, err := a.API().CreateSessionUser(ctx, &session.CreateUserRequest{
 		Username: username,
 		Password: &password,
@@ -169,11 +179,11 @@ func (a *passwordAuth) createUser(ctx context.Context, username, password string
 	return nil
 }
 
-// deleteUser removes an account by name and destroys its sessions. Rows that
+// DeleteUser removes an account by name and destroys its sessions. Rows that
 // reference "SessionUsers" hold the id, so anything the account authored has
 // to be dealt with first; the foreign key refuses the delete otherwise, which
 // is the point of storing the id rather than the name.
-func (a *passwordAuth) deleteUser(ctx context.Context, username string) error {
+func (a *PasswordAuth) DeleteUser(ctx context.Context, username string) error {
 	var id string
 	err := a.pool.QueryRow(ctx,
 		`SELECT "Id" FROM "SessionUsers" WHERE "Username" = $1`, username).Scan(&id)

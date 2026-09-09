@@ -5,6 +5,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"strconv"
 
@@ -21,8 +23,8 @@ const (
 
 // docAPI serves the document endpoints.
 type docAPI struct {
-	store Store
-	auth  authenticator
+	store store.Store
+	auth  auth.Authenticator
 }
 
 func (a *docAPI) routes(r chi.Router) {
@@ -53,7 +55,7 @@ func notFound(w http.ResponseWriter) {
 }
 
 func writeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrNotFound) {
+	if errors.Is(err, store.ErrNotFound) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"message": "not found"})
 		return
 	}
@@ -62,21 +64,21 @@ func writeError(w http.ResponseWriter, err error) {
 
 // allowedDoc reads a document and reports whether the caller may have it. A
 // document is reachable only by members of its project.
-func (a *docAPI) allowedDoc(w http.ResponseWriter, r *http.Request) (Doc, bool) {
+func (a *docAPI) allowedDoc(w http.ResponseWriter, r *http.Request) (store.Doc, bool) {
 	doc, err := a.store.Doc(r.Context(), chi.URLParam(r, "docID"))
 	if err != nil {
 		writeError(w, err)
-		return Doc{}, false
+		return store.Doc{}, false
 	}
 	user, _ := a.auth.UserFromCtx(r.Context())
 	member, err := a.store.ProjectMember(r.Context(), doc.ProjectID, user.ID)
 	if err != nil {
 		writeError(w, err)
-		return Doc{}, false
+		return store.Doc{}, false
 	}
 	if !member {
 		notFound(w)
-		return Doc{}, false
+		return store.Doc{}, false
 	}
 	return doc, true
 }
@@ -91,7 +93,7 @@ func (a *docAPI) list(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if docs == nil {
-		docs = []Doc{}
+		docs = []store.Doc{}
 	}
 	writeJSON(w, http.StatusOK, docs)
 }
@@ -110,7 +112,7 @@ func (a *docAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.ProjectID == "" {
-		body.ProjectID = defaultProjectID
+		body.ProjectID = store.DefaultProjectID
 	}
 	user, _ := a.auth.UserFromCtx(r.Context())
 	switch member, err := a.store.ProjectMember(r.Context(), body.ProjectID, user.ID); {
@@ -168,7 +170,7 @@ func (a *docAPI) save(w http.ResponseWriter, r *http.Request) {
 	}
 	user, _ := a.auth.UserFromCtx(r.Context())
 	sum := sha256.Sum256([]byte(body.Artifact))
-	version, err := a.store.SaveDoc(r.Context(), chi.URLParam(r, "docID"), Save{
+	version, err := a.store.SaveDoc(r.Context(), chi.URLParam(r, "docID"), store.Save{
 		Artifact: body.Artifact,
 		Snapshot: snapshot,
 		SHA256:   sum[:],
@@ -207,7 +209,7 @@ func (a *docAPI) versions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if versions == nil {
-		versions = []Version{}
+		versions = []store.Version{}
 	}
 	writeJSON(w, http.StatusOK, versions)
 }
