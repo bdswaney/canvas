@@ -60,15 +60,30 @@ export function Workspace({
   // Whether the document holds unsaved work is a hash comparison, not a
   // question about the journal: opening a document appends to that, and an
   // edit that is typed and deleted leaves rows behind with identical text.
+  //
+  // The hash is taken from the text itself, not from the preview's debounced
+  // copy, so that it always describes what a save would actually send.
   useEffect(() => {
     let cancelled = false;
-    void sha256Base64(rendered).then((digest) => {
-      if (!cancelled) setHash(digest);
-    });
+    let frame = 0;
+    const update = () => {
+      frame = 0;
+      const current = notes.toString();
+      void sha256Base64(current).then((digest) => {
+        if (!cancelled) setHash(digest);
+      });
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(update);
+    };
+    notes.observe(schedule);
+    update();
     return () => {
       cancelled = true;
+      if (frame !== 0) cancelAnimationFrame(frame);
+      notes.unobserve(schedule);
     };
-  }, [rendered]);
+  }, [notes]);
 
   const dirty =
     meta === null || hash === null ? false : hash !== (meta.savedSha256 ?? emptyDocumentHash);
@@ -109,8 +124,10 @@ export function Workspace({
   };
 
   // Restoring writes a saved artifact back into the live document; the server
-  // cannot rebuild CRDT state from text. Everyone in the document converges on
-  // the result, and the old version stays in history.
+  // cannot rebuild CRDT state from text. This is an edit, not a rollback: it
+  // is a replace applied to the shared text, so a peer typing at the same
+  // moment has their keystrokes merged into the restored text rather than
+  // discarded. Everyone converges, and the old version stays in history.
   const restore = async (version: number) => {
     const { artifact } = await restoreVersion(docID, version);
     doc.transact(() => {

@@ -93,6 +93,11 @@ func TestSaveCreatesVersions(t *testing.T) {
 	if len(versions) != 2 {
 		t.Fatalf("versions = %d, want 2", len(versions))
 	}
+	// Authorship is stored as the session user's id, never the username.
+	user, _ := stubAuth{valid: true}.UserFromCtx(t.Context())
+	if versions[0].AuthorID != user.ID {
+		t.Errorf("author id = %q, want %q", versions[0].AuthorID, user.ID)
+	}
 
 	// Restoring hands back the older artifact for the client to apply; the
 	// server cannot turn text back into CRDT state on its own.

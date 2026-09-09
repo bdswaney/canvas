@@ -169,7 +169,7 @@ func newHandler(assets fs.FS, h *hub, originPatterns []string, auth authenticato
 		api.Group(func(r chi.Router) {
 			r.Use(auth.ValidateSession)
 			r.Use(auth.ValidateXSRFToken)
-			r.Route("/docs", (&docAPI{store: h.store, hub: h, auth: auth}).routes)
+			r.Route("/docs", (&docAPI{store: h.store, auth: auth}).routes)
 		})
 
 		// Collaboration sockets: authenticated, but no XSRF check. A browser

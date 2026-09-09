@@ -19,11 +19,9 @@ const (
 	maxSnapshotBytes = 16 << 20
 )
 
-// docAPI serves the document endpoints. The hub is here because a restore
-// clears a journal the hub may be holding in memory.
+// docAPI serves the document endpoints.
 type docAPI struct {
 	store Store
-	hub   *hub
 	auth  authenticator
 }
 

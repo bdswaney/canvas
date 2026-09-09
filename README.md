@@ -112,7 +112,7 @@ POST   /api/docs/{id}/restore/{n}    hand back version n's artifact
 
 **Whether a document has unsaved changes is a client-side hash comparison** of the current text against `doc_state.artifact_sha256`. The tempting server-side test — "the journal has rows" — is wrong three ways: rows outlive a save, a word typed and deleted leaves rows with identical text, and merely opening a document appends a full sync frame, so every document would read dirty with no edits at all.
 
-**Restoring hands the artifact back to the client**, which writes it into the live document and saves the result as a new version. The server cannot rebuild CRDT state from text, and history is never rewritten.
+**Restoring hands the artifact back to the client**, which writes it into the live document and saves the result as a new version. The server cannot rebuild CRDT state from text, and history is never rewritten. Note that this is an edit rather than a rollback: the restore is a replace applied to the shared text, so a peer typing during it has their keystrokes merged into the restored text instead of discarded. Everyone converges on the same result, but that result is the restored version only if nobody else was mid-keystroke.
 
 People are referenced by `SessionUsers.Id` and never by username, because usernames are mutable — the session package renames them in place. The username is joined in for display.
 
@@ -135,6 +135,8 @@ Schema lives in `migrations/`, embedded in the binary and applied at startup wit
 
 - `migrations/app` (`schema_migrations`) — this application's tables.
 - `migrations/session` (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
+
+The app set depends on the session set: `doc_versions.author_id` references `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
 
 `SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The development container is already `postgres:18-alpine`; check any other deployment target before the first migration runs.
 

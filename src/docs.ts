@@ -15,6 +15,9 @@ export type Doc = {
 export type Version = {
   version: number;
   sha256: string;
+  // authorId is the durable SessionUsers id; author is that id resolved to a
+  // username for display, and is empty when it cannot be resolved.
+  authorId: string;
   author: string;
   createdAt: string;
 };

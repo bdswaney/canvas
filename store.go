@@ -28,11 +28,13 @@ type Doc struct {
 	SavedSHA256 []byte `json:"savedSha256,omitempty"`
 }
 
-// Version is one saved artifact. The author is a SessionUsers id resolved to
-// a name for display; usernames are mutable, so only the id is stored.
+// Version is one saved artifact. AuthorID is what is stored; Author is that
+// id resolved to a username for display, and is empty when the name cannot be
+// resolved. Usernames are mutable, so only the id is durable.
 type Version struct {
 	Version   int       `json:"version"`
 	SHA256    []byte    `json:"sha256"`
+	AuthorID  string    `json:"authorId"`
 	Author    string    `json:"author"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -148,7 +150,7 @@ func (s *MemoryStore) SaveDoc(_ context.Context, docID string, save Save) (int, 
 	s.versions[docID] = append(s.versions[docID], Version{
 		Version:   doc.CurrentVersion,
 		SHA256:    save.SHA256,
-		Author:    save.AuthorID,
+		AuthorID:  save.AuthorID,
 		CreatedAt: doc.UpdatedAt,
 	})
 	s.saved[docID] = append(s.saved[docID], save.Artifact)
@@ -332,7 +334,7 @@ func (s *PostgresStore) Versions(ctx context.Context, docID string) ([]Version, 
 		return nil, err
 	}
 	rows, err := s.pool.Query(ctx,
-		`SELECT v.version, v.artifact_sha256, COALESCE(u."Username", ''), v.created_at
+		`SELECT v.version, v.artifact_sha256, COALESCE(v.author_id::text, ''), COALESCE(u."Username", ''), v.created_at
 		 FROM doc_versions v
 		 LEFT JOIN "SessionUsers" u ON u."Id" = v.author_id
 		 WHERE v.doc_id = $1::uuid
@@ -344,7 +346,7 @@ func (s *PostgresStore) Versions(ctx context.Context, docID string) ([]Version, 
 	var versions []Version
 	for rows.Next() {
 		var v Version
-		if err := rows.Scan(&v.Version, &v.SHA256, &v.Author, &v.CreatedAt); err != nil {
+		if err := rows.Scan(&v.Version, &v.SHA256, &v.AuthorID, &v.Author, &v.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan version: %w", err)
 		}
 		versions = append(versions, v)
