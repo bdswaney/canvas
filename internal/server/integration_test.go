@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"context"
@@ -84,7 +84,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	handler, err := newHandler(
+	handler, err := New(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
 		relay.NewHub(st), nil, authn,
 	)

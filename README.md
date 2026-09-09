@@ -265,6 +265,21 @@ Those ngrok defaults are a development convenience: they let a page on any ngrok
 
 The Go module is `github.com/bdswaney/canvas`. `main.go` embeds the Vite build into the server binary and serves the application and its static assets.
 
+The code is split along the seams that already existed, so each package can be read without the rest:
+
+| Package | Holds | Depends on |
+|---|---|---|
+| `main` | startup, `createuser`/`deleteuser`, `ORIGINS`, the `dist` embed | everything |
+| `internal/server` | the route table, the SPA fallback | api, relay, auth |
+| `internal/api` | REST handlers for documents, projects, membership | store, auth |
+| `internal/relay` | the Yjs socket: hub, doc sessions, close codes | store, auth, lib0 |
+| `internal/auth` | session wiring and the `Authenticator` interface | — |
+| `internal/store` | the model, `Store`, and both implementations | — |
+| `internal/migrate` | the migration runner and the SQL files | — |
+| `internal/lib0` | the varint codec the Yjs protocols use | — |
+
+`internal/auth/authtest` holds the stub that stands in for the session package, so tests in every other package can exercise routing without a database. It is the reason `Authenticator` is defined once in `auth` rather than at each consumer.
+
 ```sh
 mise run serve         # watch, rebuild, and serve at http://127.0.0.1:8080
 mise run test          # build frontend and run Go routing tests
