@@ -1,0 +1,20 @@
+[package]
+name = "canvas-ydoc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# yrs is the Yjs organisation's Rust port. The Go server drives it through the
+# flat WASM interface in src/lib.rs; nothing here is called from Rust.
+[dependencies]
+yrs = "0.18"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

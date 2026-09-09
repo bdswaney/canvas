@@ -2,6 +2,7 @@
 go = "1.27.1"
 node = "24.20.0"
 air = "1.67.4"
+rust = "1.98.1"
 
 [tasks.deps]
 description = "Install locked frontend dependencies"
@@ -22,6 +23,15 @@ run = "npm run build"
 [tasks.serve]
 description = "Watch sources, rebuild the frontend, and restart Go with Air"
 run = "air -c .air.toml"
+
+[tasks."build:ydoc"]
+description = "Compile the Yjs engine to WebAssembly"
+# The result is committed, so a build or a test run needs no Rust toolchain.
+# Run this after changing anything under internal/ydoc/shim.
+run = """
+cd internal/ydoc/shim && cargo build --release
+cp target/wasm32-wasip1/release/canvas_ydoc.wasm ../ydoc.wasm
+"""
 
 [tasks."build:server"]
 description = "Build a standalone Go binary with the frontend embedded"
