@@ -92,6 +92,8 @@ client                                  server
   |  <-> update / awareness ------------->|   relayed to the other clients
 ```
 
+**The server can now read Yjs documents** — see the section below — so the compaction this paragraph describes as impossible is merely not built yet.
+
 The journal is unbounded: documents grow with every keystroke and are never compacted. Saving does **not** trim it — see the note under Saving below. Measured on a document with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
 
 ## Editing and carets
@@ -220,6 +222,55 @@ Four things that are decisions rather than consequences of the design:
 
 Known gap: removing somebody does not close the sockets they already have open. They lose access at their next reconnect, like a signed-out session.
 
+## Reading and editing documents on the server
+
+For most of its life the server could not interpret a document. It relayed
+update bytes it could not read, which is why saves are client-authored, why
+restore hands text back to a client, and why the journal has never been
+compacted.
+
+`internal/ydoc` removes that limitation. It runs [yrs](https://github.com/y-crdt/y-crdt),
+the Yjs organisation's Rust port, compiled to WebAssembly and executed by
+[wazero](https://github.com/tetratelabs/wazero) — a pure-Go runtime, so this
+needs no cgo and `CGO_ENABLED=0` still produces a single static binary. The
+compiled module is committed as `internal/ydoc/ydoc.wasm` (about 240 kB), so
+building or testing the server needs no Rust toolchain; `mise run build:ydoc`
+regenerates it after a change under `internal/ydoc/shim/`.
+
+The interface is deliberately stateless — no document handles cross into
+WebAssembly, so there is no lifecycle to manage and nothing leaks when a call
+fails:
+
+- `Merge` collapses a sequence of updates into one, which is what compaction
+  will store in place of the rows it replaces.
+- `Text` reads a named `Y.Text`.
+- `SetText` edits a document until it reads as the given text, and returns
+  only the update that change produced.
+
+`SetText` is an **edit, not a replacement**. The shared prefix and suffix are
+left alone and only the span between them is rewritten, so somebody typing in
+another paragraph keeps their work. Contrast `restore`, which really is a
+replace and is documented as such because it cannot merge.
+
+### yrs is not yjs
+
+It is a second implementation of the same format, and a disagreement between
+the two does not surface as a failed request — it silently corrupts a document
+that the browsers and the server no longer read the same way. So the
+compatibility claim is demonstrated rather than assumed:
+`internal/ydoc/conformance_test.go` drives the **real `yjs` from
+`node_modules`** through `testdata/yjs.mjs` and compares both directions —
+what the server writes read by yjs, what yjs writes read by the server,
+concurrent edits from both sides converging, and merges matching.
+
+The sharpest edge is offsets. yrs counts bytes by default; yjs in the browser
+counts UTF-16 code units. Left at the default, every index in a document
+containing anything but ASCII disagrees with the clients. Removing that one
+setting and running the suite turns `"👍👍 middle end"` into
+`"👍👍 mi endddle"` — which is exactly the kind of silent corruption the suite
+exists to catch, and why the tests edit documents that already contain
+accented characters and emoji rather than only empty ones.
+
 ## Accounts and sessions
 
 Authentication is username and password through `github.com/cccteam/session`, backed by the same Postgres pool as everything else. The HTTP route that creates users is itself behind authentication, so the first account is made from the command line:
@@ -290,6 +341,7 @@ The code is split along the seams that already existed, so each package can be r
 | `internal/store` | the model, `Store`, and both implementations | — |
 | `internal/migrate` | the migration runner and the SQL files | — |
 | `internal/lib0` | the varint codec the Yjs protocols use | — |
+| `internal/ydoc` | reads and edits Yjs documents, via yrs on WebAssembly | — |
 
 `internal/auth/authtest` holds the stub that stands in for the session package, so tests in every other package can exercise routing without a database. It is the reason `Authenticator` is defined once in `auth` rather than at each consumer.
 

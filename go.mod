@@ -3,10 +3,13 @@ module github.com/bdswaney/canvas
 go 1.27.1
 
 require (
+	github.com/cccteam/ccc v0.3.2
+	github.com/cccteam/session v0.11.0
 	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/tetratelabs/wazero v1.12.0
 )
 
 require (
@@ -27,20 +30,17 @@ require (
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/exporter/trace v1.35.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/internal/resourcemapping v0.59.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/propagator v0.59.0 // indirect
-	github.com/cccteam/ccc v0.3.2 // indirect
 	github.com/cccteam/ccc/accesstypes v0.5.8 // indirect
 	github.com/cccteam/ccc/resource v0.10.2 // indirect
 	github.com/cccteam/ccc/securehash v0.0.13 // indirect
 	github.com/cccteam/ccc/tracer v0.1.6 // indirect
 	github.com/cccteam/httpio v0.7.17 // indirect
 	github.com/cccteam/logger v0.1.27 // indirect
-	github.com/cccteam/session v0.11.0 // indirect
 	github.com/cccteam/spxscan v0.0.14 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudspannerecosystem/memefish v0.8.1 // indirect
 	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/coreos/go-oidc/v3 v3.20.0 // indirect
-	github.com/docker/go-connections v0.8.1 // indirect
 	github.com/envoyproxy/go-control-plane/envoy v1.39.0 // indirect
 	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/felixge/httpsnoop v1.1.0 // indirect
@@ -60,12 +60,9 @@ require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
-	github.com/lib/pq v1.12.3 // indirect
-	github.com/moby/term v0.5.2 // indirect
-	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.8.1 // indirect
-	github.com/stretchr/testify v1.12.0 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/detectors/gcp v1.45.0 // indirect
