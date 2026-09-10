@@ -40,15 +40,20 @@ const themeCompartment = new Compartment();
  * character-level sync in both directions and draws every other client's
  * caret and selection using the color each of them publishes on the awareness
  * channel.
+ *
+ * A parent that hides the editor should keep it mounted and pass hidden, not
+ * unmount it: unmounting destroys the view and the undo history with it.
  */
 export function Editor({
   text,
   awareness,
   dark,
+  hidden = false,
 }: {
   text: Y.Text;
   awareness: Awareness;
   dark: boolean;
+  hidden?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
@@ -92,6 +97,12 @@ export function Editor({
   useEffect(() => {
     view.current?.dispatch({ effects: themeCompartment.reconfigure(editorTheme(dark)) });
   }, [dark]);
+
+  // A view under display: none measures as zero, so ask for a fresh
+  // measurement once it is shown again rather than trusting stale geometry.
+  useEffect(() => {
+    if (!hidden) view.current?.requestMeasure();
+  }, [hidden]);
 
   return <div ref={host} />;
 }

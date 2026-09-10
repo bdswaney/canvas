@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   Alert,
   Badge,
@@ -10,20 +10,32 @@ import {
   Group,
   Loader,
   Paper,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Table,
   Text,
   Title,
   useComputedColorScheme,
+  useMantineTheme,
+  VisuallyHidden,
 } from '@mantine/core';
+import { useLocalStorage, useMediaQuery } from '@mantine/hooks';
 import * as Y from 'yjs';
 import { Cursors } from '../collab/Cursors';
 import { Editor } from '../editor/Editor';
 import { Preview } from '../editor/Preview';
 import { listVersions, restoreVersion, saveDoc, sha256Base64, useDoc, type Version } from '../api/docs';
 import { usePresence } from '../collab/presence';
-import { IconArrowBackUp, IconDeviceFloppy, IconHistory } from '@tabler/icons-react';
+import {
+  IconArrowBackUp,
+  IconColumns1,
+  IconColumns2,
+  IconDeviceFloppy,
+  IconEye,
+  IconHistory,
+  IconPencil,
+} from '@tabler/icons-react';
 import { useSharedText, useSync, useTextSnapshot, type Status } from '../collab/sync';
 
 // sha256 of the empty string, base64. A document that has never been saved
@@ -35,6 +47,40 @@ const statusColors: Record<Status, string> = {
   connecting: 'yellow',
   disconnected: 'red',
 };
+
+// How the editor and preview are laid out is a viewing preference, not
+// document state: it lives in this browser, so two people reading the same
+// document can disagree. Mantine's storage hook tolerates blocked storage.
+type Layout = 'split' | 'single';
+type Pane = 'edit' | 'preview';
+
+const layoutOptions = [
+  { value: 'split', label: <LayoutLabel icon={<IconColumns2 size={16} stroke={1.5} />} name="Split view" /> },
+  { value: 'single', label: <LayoutLabel icon={<IconColumns1 size={16} stroke={1.5} />} name="Single column" /> },
+];
+
+const paneOptions = [
+  { value: 'edit', label: <PaneLabel icon={<IconPencil size={16} stroke={1.5} />} name="Markdown" /> },
+  { value: 'preview', label: <PaneLabel icon={<IconEye size={16} stroke={1.5} />} name="Preview" /> },
+];
+
+function LayoutLabel({ icon, name }: { icon: ReactNode; name: string }) {
+  return (
+    <Center title={name}>
+      {icon}
+      <VisuallyHidden>{name}</VisuallyHidden>
+    </Center>
+  );
+}
+
+function PaneLabel({ icon, name }: { icon: ReactNode; name: string }) {
+  return (
+    <Group gap={6} wrap="nowrap" justify="center">
+      {icon}
+      <span>{name}</span>
+    </Group>
+  );
+}
 
 export function Workspace({
   docID,
@@ -57,6 +103,30 @@ export function Workspace({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[] | null>(null);
+
+  const [layout, setLayout] = useLocalStorage<Layout>({
+    key: 'canvas-workspace-layout',
+    defaultValue: 'split',
+    getInitialValueInEffect: false,
+  });
+  const [pane, setPane] = useLocalStorage<Pane>({
+    key: 'canvas-workspace-pane',
+    defaultValue: 'edit',
+    getInitialValueInEffect: false,
+  });
+
+  // Split has never worked below md, so a narrow screen is always single
+  // column and the layout control is not offered there. The same query
+  // decides both, so they cannot disagree at the boundary.
+  const theme = useMantineTheme();
+  const wide = useMediaQuery(`(min-width: ${theme.breakpoints.md})`, undefined, {
+    getInitialValueInEffect: false,
+  });
+  const singleColumn = !wide || layout === 'single';
+  // Anything unexpected in storage falls back to showing the editor, so no
+  // combination leaves both panes hidden.
+  const showEditor = !singleColumn || pane !== 'preview';
+  const showPreview = !singleColumn || pane === 'preview';
 
   // Whether the document holds unsaved work is a hash comparison, not a
   // question about the journal: opening a document appends to that, and an
@@ -210,6 +280,14 @@ export function Workspace({
               <Badge variant="light" color={dirty ? 'orange' : 'gray'}>
                 {dirty ? 'unsaved changes' : 'saved'}
               </Badge>
+              {wide && (
+                <SegmentedControl
+                  aria-label="Layout"
+                  value={layout === 'single' ? 'single' : 'split'}
+                  onChange={(value) => setLayout(value as Layout)}
+                  data={layoutOptions}
+                />
+              )}
               <Button
                 variant="default"
                 leftSection={<IconHistory size={16} stroke={1.5} />}
@@ -241,17 +319,34 @@ export function Workspace({
             </Alert>
           )}
 
-          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="xl">
-            <Stack gap="xs">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Markdown</Text>
+          {singleColumn && (
+            <SegmentedControl
+              aria-label="Show"
+              value={showEditor ? 'edit' : 'preview'}
+              onChange={(value) => setPane(value as Pane)}
+              data={paneOptions}
+              style={{ alignSelf: 'flex-start' }}
+            />
+          )}
+
+          {/* The tree stays the same shape in every layout. The editor is
+              hidden rather than unmounted, which would destroy its view and
+              undo history on every toggle; it also keeps this person's last
+              caret visible to peers while they read. The preview re-reads
+              the text when it mounts, so it is simply left out. */}
+          <SimpleGrid cols={singleColumn ? 1 : 2} spacing="xl">
+            <Stack gap="xs" display={showEditor ? undefined : 'none'}>
+              {!singleColumn && <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Markdown</Text>}
               <Divider />
-              <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} />
+              <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} hidden={!showEditor} />
             </Stack>
-            <Stack gap="xs">
-              <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Preview</Text>
-              <Divider />
-              <Preview text={rendered} />
-            </Stack>
+            {showPreview && (
+              <Stack gap="xs">
+                {!singleColumn && <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Preview</Text>}
+                <Divider />
+                <Preview text={rendered} />
+              </Stack>
+            )}
           </SimpleGrid>
         </Stack>
       </Paper>

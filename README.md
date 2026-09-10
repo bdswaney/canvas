@@ -2,7 +2,7 @@
 
 nPly is a collaborative Markdown workspace built with Go, React, and TypeScript. Organize documents into projects, edit together in real time, and save versions to a shared history. MCP clients can read and edit documents alongside browser users.
 
-The editor uses CodeMirror and Yjs, with a GitHub-flavored Markdown preview, shared cursors, and undo for your own edits. PostgreSQL stores accounts, documents, saved versions, and live edits. The Go server serves the web app, collaboration relay, and MCP endpoint from one binary.
+The editor uses CodeMirror and Yjs, with a GitHub-flavored Markdown preview, shared cursors, and undo for your own edits. On wide screens the preview sits beside the editor or, in single-column layout, one toggle away; narrow screens always show one pane at a time, and each browser remembers its choice. PostgreSQL stores accounts, documents, saved versions, and live edits. The Go server serves the web app, collaboration relay, and MCP endpoint from one binary.
 
 ## Quick start
 
@@ -229,4 +229,4 @@ internal/
 
 ## Open work
 
-The [issue tracker](https://github.com/bdswaney/nPly/issues) covers current work, including [document search](https://github.com/bdswaney/nPly/issues/18), [finer-grained MCP edits](https://github.com/bdswaney/nPly/issues/19), [MCP archiving](https://github.com/bdswaney/nPly/issues/20), [editor/preview modes](https://github.com/bdswaney/nPly/issues/7), [version diffs](https://github.com/bdswaney/nPly/issues/9), and [inline comments](https://github.com/bdswaney/nPly/issues/8).
+The [issue tracker](https://github.com/bdswaney/nPly/issues) covers current work, including [document search](https://github.com/bdswaney/nPly/issues/18), [finer-grained MCP edits](https://github.com/bdswaney/nPly/issues/19), [MCP archiving](https://github.com/bdswaney/nPly/issues/20), [version diffs](https://github.com/bdswaney/nPly/issues/9), and [inline comments](https://github.com/bdswaney/nPly/issues/8).
