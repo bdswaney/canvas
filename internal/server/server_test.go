@@ -19,7 +19,7 @@ func TestFrontendRouting(t *testing.T) {
 	handler, err := New(fstest.MapFS{
 		"index.html":    {Data: []byte(index)},
 		"assets/app.js": {Data: []byte(script)},
-	}, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
+	}, relay.NewHub(store.NewMemoryStore(), nil), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestFrontendRouting(t *testing.T) {
 }
 
 func TestMissingFrontendEntryPoint(t *testing.T) {
-	if _, err := New(fstest.MapFS{}, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true}); err == nil {
+	if _, err := New(fstest.MapFS{}, relay.NewHub(store.NewMemoryStore(), nil), nil, authtest.Stub{Valid: true}); err == nil {
 		t.Fatal("expected error for missing index.html")
 	}
 }
@@ -81,7 +81,7 @@ func TestMissingFrontendEntryPoint(t *testing.T) {
 func TestDocRoutesDoNotSwallowTheApp(t *testing.T) {
 	handler, err := New(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		relay.NewHub(newTestStore(t)), nil, authtest.Stub{Valid: true},
+		relay.NewHub(newTestStore(t), nil), nil, authtest.Stub{Valid: true},
 	)
 	if err != nil {
 		t.Fatal(err)

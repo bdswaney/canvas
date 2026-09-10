@@ -92,9 +92,12 @@ client                                  server
   |  <-> update / awareness ------------->|   relayed to the other clients
 ```
 
-**The server can now read Yjs documents** — see the section below — so the compaction this paragraph describes as impossible is merely not built yet.
+**The journal is now compacted.** When a document's last client disconnects,
+the server folds its live journal into a single update carrying the same
+document — 278 rows into one, on a real document here, replaying to identical
+text. See "Compacting the journal" below.
 
-The journal is unbounded: documents grow with every keystroke and are never compacted. Saving does **not** trim it — see the note under Saving below. Measured on a document with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. Squashing the log into a snapshot needs a Yjs implementation on the server and is deliberately left for later.
+The journal grows with every keystroke and every connection. Saving does **not** trim it — see the note under Saving below. Measured on a document with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. That growth is what compaction now removes.
 
 ## Editing and carets
 
@@ -270,6 +273,43 @@ setting and running the suite turns `"👍👍 middle end"` into
 `"👍👍 mi endddle"` — which is exactly the kind of silent corruption the suite
 exists to catch, and why the tests edit documents that already contain
 accented characters and emoji rather than only empty ones.
+
+## Compacting the journal
+
+Every keystroke appends a row, and so does every connection — y-websocket
+reconnects on any network blip and answers with a full `syncStep2` copy of the
+document. Nothing used to remove a row, and every joining client replayed all
+of them.
+
+`Hub.Compact` merges a document's live journal into one update through
+`internal/ydoc`. Two choices make it safe:
+
+**It only runs when nobody is connected.** `Hub.history` caches the journal for
+the life of a session, so compacting underneath a live one would leave the
+cache serving rows the store had already retired. Waiting for the last client
+to leave sidesteps the cache and most of the concurrency together.
+
+**Rows are marked, not deleted.** `superseded_at` takes them out of replay and
+leaves them in the table, so a merge that ever proves wrong is one `UPDATE`
+away from being undone. Actually deleting them is a later, separate change —
+this is the first operation in Canvas that could destroy data, and a mistake
+would not surface as an error but as a document that replays into different
+text for everyone who joins afterwards.
+
+### The identity-visibility race
+
+`Supersede` takes the exact ids it merged rather than a range, and that is
+load-bearing. `doc_updates.id` is an identity column: the value is assigned at
+`INSERT` but only becomes visible at `COMMIT`, so a row with a *lower* id can
+appear after a reader has already seen a higher one. `DELETE ... WHERE id <=
+max` would retire an update that was never merged, silently. Naming the ids
+means a row that commits late is simply not in the list and survives — no
+locking, and nothing added to `Append`, which is the hottest path in the
+system.
+
+`TestSupersedeKeepsARowThatCommitsLate` reproduces this with real overlapping
+transactions, and it is mutation-tested: switching `Supersede` to a range
+retire makes it fail.
 
 ## Accounts and sessions
 

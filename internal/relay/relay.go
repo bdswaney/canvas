@@ -93,15 +93,18 @@ type docSession struct {
 // Hub owns the live document sessions. A session is dropped when its last
 // client leaves; the durable log in the store outlives it.
 type Hub struct {
-	store store.Store
+	store  store.Store
+	merger Merger
 
 	mu       sync.Mutex
 	sessions map[string]*docSession
 }
 
-// NewHub returns a Hub over the given store.
-func NewHub(store store.Store) *Hub {
-	return &Hub{store: store, sessions: map[string]*docSession{}}
+// NewHub returns a Hub over the given store. Without a Merger it relays and
+// journals exactly as before; with one it also compacts a document's journal
+// once the last client leaves.
+func NewHub(store store.Store, merger Merger) *Hub {
+	return &Hub{store: store, merger: merger, sessions: map[string]*docSession{}}
 }
 
 func (h *Hub) session(docID string) *docSession {
@@ -132,14 +135,22 @@ func (h *Hub) leave(r *docSession, c *client) {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	// Another client may have joined while the session lock was released.
+	dropped := false
 	if current, ok := h.sessions[r.docID]; ok && current == r {
 		r.mu.Lock()
 		if len(r.clients) == 0 {
 			delete(h.sessions, r.docID)
+			dropped = true
 		}
 		r.mu.Unlock()
+	}
+	h.mu.Unlock()
+
+	// With the session gone there is no cached journal to go stale, which is
+	// what makes this the safe moment to compact.
+	if dropped {
+		h.compactAfter(r.docID)
 	}
 }
 

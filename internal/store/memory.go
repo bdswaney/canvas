@@ -11,22 +11,23 @@ import (
 // MemoryStore holds everything for the process lifetime. Tests use it so most
 // of them need no database.
 type MemoryStore struct {
-	mu       sync.Mutex
-	journals map[string][][]byte
-	projects map[string]*Project
-	docs     map[string]*Doc
-	versions map[string][]Version
-	saved    map[string][]string // doc id -> artifact per version, 1-based
-	members  map[string][]Member // project id -> members
-	archived map[string]bool     // ids of archived projects and documents
-	next     int
+	mu        sync.Mutex
+	journals  map[string][]JournalEntry
+	projects  map[string]*Project
+	docs      map[string]*Doc
+	versions  map[string][]Version
+	saved     map[string][]string // doc id -> artifact per version, 1-based
+	members   map[string][]Member // project id -> members
+	archived  map[string]bool     // ids of archived projects and documents
+	nextEntry int64               // journal entry ids, mirroring the identity column
+	next      int
 }
 
 func NewMemoryStore() *MemoryStore {
 	// The default project is seeded by the migrations in Postgres, so seed it
 	// here too or the two stores disagree about what an empty database holds.
 	return &MemoryStore{
-		journals: map[string][][]byte{},
+		journals: map[string][]JournalEntry{},
 		projects: map[string]*Project{
 			DefaultProjectID: {ID: DefaultProjectID, Name: "Default", CreatedAt: time.Now()},
 		},
@@ -147,14 +148,62 @@ func (s *MemoryStore) RemoveProjectMember(_ context.Context, projectID, userID s
 func (s *MemoryStore) Append(_ context.Context, docID string, update []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.journals[docID] = append(s.journals[docID], append([]byte(nil), update...))
+	s.nextEntry++
+	s.journals[docID] = append(s.journals[docID], JournalEntry{
+		ID:     s.nextEntry,
+		Update: append([]byte(nil), update...),
+	})
 	return nil
 }
 
 func (s *MemoryStore) Load(_ context.Context, docID string) ([][]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([][]byte(nil), s.journals[docID]...), nil
+	updates := make([][]byte, 0, len(s.journals[docID]))
+	for _, entry := range s.journals[docID] {
+		updates = append(updates, entry.Update)
+	}
+	return updates, nil
+}
+
+func (s *MemoryStore) Journal(_ context.Context, docID string) ([]JournalEntry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]JournalEntry(nil), s.journals[docID]...), nil
+}
+
+// Supersede drops the named entries and appends the merged update. The
+// in-memory journal holds only live entries, so retiring one really does
+// remove it here — the durable store keeps them, which is what makes a bad
+// merge recoverable there.
+func (s *MemoryStore) Supersede(_ context.Context, docID string, ids []int64, merged []byte) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	retiring := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		retiring[id] = true
+	}
+	kept := make([]JournalEntry, 0, len(s.journals[docID]))
+	var found int
+	for _, entry := range s.journals[docID] {
+		if retiring[entry.ID] {
+			found++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	if found != len(ids) {
+		return fmt.Errorf("superseded %d of %d rows; another compaction raced this one", found, len(ids))
+	}
+	s.nextEntry++
+	s.journals[docID] = append(kept, JournalEntry{
+		ID:     s.nextEntry,
+		Update: append([]byte(nil), merged...),
+	})
+	return nil
 }
 
 func (s *MemoryStore) Docs(_ context.Context, projectID, userID string) ([]Doc, error) {

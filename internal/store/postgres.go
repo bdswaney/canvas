@@ -52,8 +52,12 @@ func (s *PostgresStore) Append(ctx context.Context, docID string, update []byte)
 }
 
 func (s *PostgresStore) Load(ctx context.Context, docID string) ([][]byte, error) {
+	// Superseded rows are the ones a compaction already folded into a merged
+	// update. They stay in the table but are no longer replayed.
 	rows, err := s.pool.Query(ctx,
-		"SELECT update FROM doc_updates WHERE doc_id = $1::uuid ORDER BY id", docID)
+		`SELECT update FROM doc_updates
+		 WHERE doc_id = $1::uuid AND superseded_at IS NULL
+		 ORDER BY id`, docID)
 	if err != nil {
 		return nil, fmt.Errorf("load updates: %w", err)
 	}
@@ -67,6 +71,66 @@ func (s *PostgresStore) Load(ctx context.Context, docID string) ([][]byte, error
 		updates = append(updates, update)
 	}
 	return updates, rows.Err()
+}
+
+func (s *PostgresStore) Journal(ctx context.Context, docID string) ([]JournalEntry, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, update FROM doc_updates
+		 WHERE doc_id = $1::uuid AND superseded_at IS NULL
+		 ORDER BY id`, docID)
+	if err != nil {
+		return nil, fmt.Errorf("read journal: %w", err)
+	}
+	defer rows.Close()
+	var entries []JournalEntry
+	for rows.Next() {
+		var entry JournalEntry
+		if err := rows.Scan(&entry.ID, &entry.Update); err != nil {
+			return nil, fmt.Errorf("scan journal entry: %w", err)
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// Supersede retires exactly the rows named by ids and appends the merged
+// update in their place, in one transaction.
+//
+// The merged row is inserted after the rows it replaces, so it sorts after
+// anything that arrived while the merge was being computed. That is fine:
+// Yjs updates are commutative and a client buffers an update whose
+// dependencies have not arrived yet, so replay converges either way.
+func (s *PostgresStore) Supersede(ctx context.Context, docID string, ids []int64, merged []byte) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin supersede: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		"INSERT INTO doc_updates (doc_id, update) VALUES ($1::uuid, $2)", docID, merged); err != nil {
+		return fmt.Errorf("write merged update: %w", err)
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE doc_updates SET superseded_at = now()
+		 WHERE doc_id = $1::uuid AND id = ANY($2::bigint[]) AND superseded_at IS NULL`,
+		docID, ids)
+	if err != nil {
+		return fmt.Errorf("supersede journal rows: %w", err)
+	}
+	if tag.RowsAffected() != int64(len(ids)) {
+		// Somebody else compacted the same rows first. Roll back rather than
+		// leave a merged update alongside rows it does not account for.
+		return fmt.Errorf("superseded %d of %d rows; another compaction raced this one",
+			tag.RowsAffected(), len(ids))
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit supersede: %w", err)
+	}
+	return nil
 }
 
 const docColumns = `d.id, d.project_id, d.name, d.current_version, d.updated_at, s.artifact_sha256`
