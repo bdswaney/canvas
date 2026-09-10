@@ -9,6 +9,7 @@ import (
 	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/server"
 	"github.com/bdswaney/canvas/internal/store"
+	"github.com/bdswaney/canvas/internal/ydoc"
 	"io/fs"
 	"log"
 	"net/http"
@@ -59,6 +60,15 @@ func main() {
 		return
 	}
 
+	// The CRDT engine lets the server fold a document's journal into a single
+	// update once nobody is editing it. Without it the relay still works;
+	// journals just grow without bound, as they always have.
+	engine, err := ydoc.New(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer engine.Close(context.Background())
+
 	assets, err := fs.Sub(frontend, "dist")
 	if err != nil {
 		log.Fatal(err)
@@ -67,7 +77,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	handler, err := server.New(assets, relay.NewHub(db), originPatterns, authn)
+	handler, err := server.New(assets, relay.NewHub(db, engine), originPatterns, authn)
 	if err != nil {
 		log.Fatal(err)
 	}

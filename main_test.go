@@ -18,7 +18,7 @@ func TestEmbeddedFrontend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := server.New(assets, relay.NewHub(store.NewMemoryStore()), nil, authtest.Stub{Valid: true})
+	handler, err := server.New(assets, relay.NewHub(store.NewMemoryStore(), nil), nil, authtest.Stub{Valid: true})
 	if err != nil {
 		t.Fatal(err)
 	}

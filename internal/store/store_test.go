@@ -336,3 +336,85 @@ func postgresFixture(t *testing.T) (store *PostgresStore, projectID, elsewhereID
 
 	return store, project.ID, elsewhere.ID, userID, strangerID
 }
+
+// An identity value is assigned at INSERT and only becomes visible at COMMIT,
+// so a row with a *lower* id can appear after a reader has already seen a
+// higher one. Retiring a range rather than the exact ids read would drop that
+// row silently — an edit gone with no error anywhere.
+//
+// This needs real transactions to reproduce, so it is Postgres-only; the
+// in-memory store hands out ids monotonically and cannot show it.
+func TestSupersedeKeepsARowThatCommitsLate(t *testing.T) {
+	store, projectID, _, _, _ := postgresFixture(t)
+	ctx := context.Background()
+
+	doc, err := store.CreateDoc(ctx, projectID, "Race")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A slow writer takes an id and holds the transaction open.
+	slow, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer slow.Rollback(ctx)
+	var slowID int64
+	if err := slow.QueryRow(ctx,
+		"INSERT INTO doc_updates (doc_id, update) VALUES ($1::uuid, $2) RETURNING id",
+		doc.ID, []byte{0x01}).Scan(&slowID); err != nil {
+		t.Fatal(err)
+	}
+
+	// A quick writer lands afterwards and so takes a higher id.
+	if err := store.Append(ctx, doc.ID, []byte{0x02}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A compaction reads the journal now: it sees the quick row and not the
+	// slow one, which has not committed.
+	entries, err := store.Journal(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	var highest int64
+	for _, entry := range entries {
+		ids = append(ids, entry.ID)
+		if entry.ID > highest {
+			highest = entry.ID
+		}
+	}
+	if len(ids) != 1 {
+		t.Fatalf("read %d rows, want only the committed one", len(ids))
+	}
+	if slowID >= highest {
+		t.Fatalf("slow row id %d is not below the highest read id %d; "+
+			"the test is not reproducing the race", slowID, highest)
+	}
+
+	// Now it commits, appearing behind a row the compaction already read.
+	if err := slow.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Supersede(ctx, doc.ID, ids, []byte{0x03}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The late row has to still be replayed. A range retire would have taken
+	// it, because its id is below the highest one read.
+	after, err := store.Journal(ctx, doc.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept bool
+	for _, entry := range after {
+		if entry.ID == slowID {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Fatalf("the row that committed late was retired; live rows are now %v", after)
+	}
+}

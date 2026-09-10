@@ -66,9 +66,30 @@ type Save struct {
 // Store keeps the ordered update journal for each doc, and the docs
 // themselves. Yjs updates are idempotent and commutative, so replaying a
 // journal reconstructs the document without the server understanding it.
+// JournalEntry is one stored update and the id it lives under. Compaction
+// needs the ids so it can supersede exactly the rows it merged.
+type JournalEntry struct {
+	ID     int64
+	Update []byte
+}
+
 type Store interface {
 	Append(ctx context.Context, docID string, update []byte) error
 	Load(ctx context.Context, docID string) ([][]byte, error)
+
+	// Journal returns the live updates for a document with their ids, which
+	// is what Load reads without them.
+	Journal(ctx context.Context, docID string) ([]JournalEntry, error)
+
+	// Supersede replaces the given journal rows with one merged update
+	// carrying the same document. It takes the ids to retire rather than a
+	// range on purpose: an identity value is assigned at INSERT and only
+	// becomes visible at COMMIT, so a row with a lower id can appear after a
+	// reader has seen a higher one. Retiring a range would drop it silently.
+	//
+	// Nothing is deleted. The retired rows are marked, so restoring them is
+	// one UPDATE away if a merge ever proves wrong.
+	Supersede(ctx context.Context, docID string, ids []int64, merged []byte) error
 
 	// Projects lists the projects userID belongs to. Membership is the
 	// authorization boundary, so the lists that could otherwise leak the

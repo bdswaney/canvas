@@ -86,3 +86,20 @@ func TestGarbageIsAnErrorNotACrash(t *testing.T) {
 		t.Fatal("expected an error for a malformed state")
 	}
 }
+
+// Folding an update into a document that does not exist yet is the ordinary
+// first step of building one, so an empty state must not need special-casing.
+func TestMergeIgnoresEmptyUpdates(t *testing.T) {
+	e := engine(t)
+	update, err := e.SetText(t.Context(), nil, "notes", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	merged, err := e.Merge(t.Context(), [][]byte{nil, update, {}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Text(t.Context(), merged, "notes"); err != nil || got != "first" {
+		t.Fatalf("merged with empty entries = %q, %v; want %q", got, err, "first")
+	}
+}

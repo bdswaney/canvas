@@ -32,7 +32,7 @@ func newTestRelay(t *testing.T, st store.Store) *testRelay {
 func newTestRelayWithAuth(t *testing.T, st store.Store, authn auth.Authenticator) *testRelay {
 	t.Helper()
 	router := chi.NewRouter()
-	router.Get("/api/sync/doc/{docID}", NewHub(st).Handler(nil, authn))
+	router.Get("/api/sync/doc/{docID}", NewHub(st, nil).Handler(nil, authn))
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	return &testRelay{
@@ -192,7 +192,7 @@ func TestAwarenessIsRelayedButNotStored(t *testing.T) {
 
 func TestInvalidDocID(t *testing.T) {
 	router := chi.NewRouter()
-	router.Get("/api/sync/doc/{docID}", NewHub(newTestStore(t)).Handler(nil, authtest.Stub{Valid: true}))
+	router.Get("/api/sync/doc/{docID}", NewHub(newTestStore(t), nil).Handler(nil, authtest.Stub{Valid: true}))
 	server := httptest.NewServer(router)
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -166,9 +166,15 @@ func (i *instance) result(packed uint64) ([]byte, error) {
 // it replaces.
 func (e *Engine) Merge(ctx context.Context, updates [][]byte) ([]byte, error) {
 	// Each update is prefixed with its length, which is the framing the module
-	// expects; see canvas_merge_updates.
+	// expects; see canvas_merge_updates. Empty entries are skipped rather than
+	// framed as zero-length ones: an empty update is not decodable, and a
+	// caller folding a new update into a document that does not exist yet
+	// should not have to special-case the first one.
 	var framed []byte
 	for _, update := range updates {
+		if len(update) == 0 {
+			continue
+		}
 		framed = binary.LittleEndian.AppendUint32(framed, uint32(len(update)))
 		framed = append(framed, update...)
 	}
