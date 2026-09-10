@@ -85,6 +85,10 @@ run = "go run . createuser"
 description = "Delete a login (usage: mise run deleteuser <username>)"
 run = "go run . deleteuser"
 
+[tasks.token]
+description = "Manage access tokens (usage: mise run token create <username> <name>)"
+run = "go run . token"
+
 [tasks.mcp]
 description = "Serve Canvas over MCP on stdio (usage: mise run mcp <username>)"
 run = "go run . mcp"

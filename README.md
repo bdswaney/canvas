@@ -339,20 +339,53 @@ line rather than authenticated, because anyone who can run this already holds
 `store.ProjectMember` exactly as the web API does, rather than around it.
 Anything out of reach is reported as missing, never as forbidden.
 
-### The limitation worth knowing
+### Two ways to serve it
 
-The subcommand is a **separate process from the web server**, with its own
-relay. An edit made through it is journalled and durable, and anybody who
-opens the document afterwards sees it — but somebody who *already* has it open
-will not, because a hub can only broadcast to sessions in its own process.
-Worse, their editor still holds the older document and may write over the
-change.
+**Over HTTP, at `/api/mcp`** — the one to prefer. It runs inside the web
+server, so it shares the relay's hub and an edit reaches somebody who already
+has the document open, live, with no reload. It authenticates with an access
+token (below).
 
-So MCP edits are reliable for documents nobody is currently in, which is the
-usual case for an assistant working on somebody's behalf, and unreliable for
-one being actively edited. Fixing it means running the MCP server inside the
-web server over a network transport, which needs a real credential — the
-token work described on the issue.
+```
+Authorization: Bearer canvas_pat_...
+```
+
+**Over stdio, as `canvas mcp <username>`** — convenient for a local client,
+and it needs no token because anyone who can run it already holds
+`DATABASE_URL`. The catch is that it is a **separate process with its own
+relay**: an edit is journalled and durable, and anybody who opens the document
+afterwards sees it, but somebody who *already* has it open will not, and their
+editor may write over it. Prefer HTTP when a document might be in use.
+
+## Access tokens
+
+The session cookie is `SameSite=Strict`, carries an XSRF token, and expires
+after ten minutes of HTTP silence. All three are right for a browser and wrong
+for a long-lived program, which holds no cookie jar and has no XSRF cookie to
+echo. Tokens are what such a client can hold.
+
+```sh
+mise run token create troy@cloud-team.com "laptop"   # prints the token, once
+mise run token list troy@cloud-team.com
+mise run token revoke <token id>
+```
+
+- **Only a hash is stored.** The token is visible exactly once, when it is
+  created; a lost token is replaced, not recovered. They are high-entropy
+  random values rather than passwords, so a plain sha256 is the right choice —
+  bcrypt and argon2 exist to slow down guessing a human-chosen secret, and
+  there is nothing here to guess.
+- **A token resolves to an account** and lands in the request context in the
+  same shape session validation uses, so every membership check downstream
+  cannot tell the two apart. There is no second authorization path.
+- **Revoking marks rather than deletes**, so a token that was used stays
+  accountable for what it did. Expiry and revocation are checked in the lookup
+  query, so a lapsed token is indistinguishable from one that never existed.
+- **No XSRF check on the token route**, deliberately. XSRF defends against a
+  browser attaching a credential by itself; a bearer token is only ever sent by
+  a client that was told to send it. `/api/mcp` is mounted outside the browser
+  middleware for the same reason — `SetXSRFToken` would answer every call with
+  a 307.
 
 ## Accounts and sessions
 

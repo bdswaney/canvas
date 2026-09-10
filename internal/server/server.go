@@ -24,7 +24,7 @@ import (
 // New builds the whole HTTP handler: the API behind session middleware, the
 // collaboration socket, and the SPA fallback for everything else. assets is
 // the built frontend; it must contain index.html.
-func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authenticator) (http.Handler, error) {
+func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authenticator, mcpHandler http.Handler) (http.Handler, error) {
 	index, err := fs.ReadFile(assets, "index.html")
 	if err != nil {
 		return nil, fmt.Errorf("read frontend entry point: %w", err)
@@ -32,6 +32,26 @@ func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authent
 
 	router := chi.NewRouter()
 	router.Use(middleware.Recoverer)
+
+	// The Model Context Protocol, for clients that are not browsers. Mounted
+	// before /api and outside its middleware on purpose: that chain starts a
+	// cookie session and issues an XSRF token, and SetXSRFToken answers a
+	// write that has no XSRF cookie with a 307. An MCP client has no cookie
+	// jar, so every call would be redirected rather than served.
+	//
+	// Dropping the XSRF check costs nothing here. It defends against a browser
+	// attaching a credential by itself; a bearer token is only ever sent by a
+	// client that was told to send it. The handler passed in carries its own
+	// authentication.
+	//
+	// Serving it in this process rather than from a subcommand is what lets an
+	// assistant's edit reach somebody who already has the document open: this
+	// handler and the relay share a hub.
+	if mcpHandler != nil {
+		router.Handle("/api/mcp", mcpHandler)
+		router.Handle("/api/mcp/*", mcpHandler)
+	}
+
 	router.Route("/api", func(r chi.Router) {
 		// Every API route needs the session cookie read and an XSRF token
 		// issued; SetXSRFToken depends on StartSession having run.
@@ -61,6 +81,7 @@ func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authent
 		// the session cookie being SameSite=Strict, so a cross-site handshake
 		// carries no cookie at all, with the Origin check behind it.
 		r.Get("/sync/doc/{docID}", h.Handler(originPatterns, authn))
+
 	})
 	// Unrouted paths are client-side routes, static files, or genuine 404s.
 	spa := serveApp(assets, index)
