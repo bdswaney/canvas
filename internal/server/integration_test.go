@@ -86,7 +86,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 
 	handler, err := New(
 		fstest.MapFS{"index.html": {Data: []byte(`<div id="root"></div>`)}},
-		relay.NewHub(st, nil), nil, authn,
+		relay.NewHub(st, nil), nil, authn, nil,
 	)
 	if err != nil {
 		t.Fatal(err)
