@@ -85,6 +85,10 @@ run = "go run . createuser"
 description = "Delete a login (usage: mise run deleteuser <username>)"
 run = "go run . deleteuser"
 
+[tasks.mcp]
+description = "Serve Canvas over MCP on stdio (usage: mise run mcp <username>)"
+run = "go run . mcp"
+
 [tasks."dev:server"]
 description = "Build and run the server for local http development"
 depends = ["build"]
