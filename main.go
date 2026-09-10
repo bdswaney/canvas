@@ -4,12 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/bdswaney/canvas/internal/auth"
-	"github.com/bdswaney/canvas/internal/migrate"
-	"github.com/bdswaney/canvas/internal/relay"
-	"github.com/bdswaney/canvas/internal/server"
-	"github.com/bdswaney/canvas/internal/store"
-	"github.com/bdswaney/canvas/internal/ydoc"
 	"io/fs"
 	"log"
 	"net/http"
@@ -18,6 +12,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/bdswaney/canvas/internal/auth"
+	mcpserver "github.com/bdswaney/canvas/internal/mcp"
+	"github.com/bdswaney/canvas/internal/migrate"
+	"github.com/bdswaney/canvas/internal/relay"
+	"github.com/bdswaney/canvas/internal/server"
+	"github.com/bdswaney/canvas/internal/store"
+	"github.com/bdswaney/canvas/internal/ydoc"
 )
 
 // Tunnels terminate TLS and present their own Host, so their origins have to
@@ -29,6 +33,16 @@ var defaultOrigins = []string{"*.ngrok-free.dev", "*.ngrok-free.app", "*.ngrok.a
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// The MCP subcommand speaks a protocol on stdout, so nothing else may
+	// write there. Take the real handle now and point os.Stdout at stderr for
+	// the rest of startup: the session package prints a generated cookie key
+	// straight to stdout, which would corrupt the first message, and any
+	// library that does the same in future is covered too.
+	protocol := os.Stdout
+	if len(os.Args) > 1 && os.Args[1] == "mcp" {
+		os.Stdout = os.Stderr
+	}
 
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -51,23 +65,23 @@ func main() {
 		log.Fatal(err)
 	}
 
-	// canvas createuser <username> <password> makes the first account, which
-	// cannot come through the API because that route requires a session.
-	if len(os.Args) > 1 {
-		if err := runCommand(ctx, authn, os.Args[1:]); err != nil {
-			log.Fatal(err)
-		}
-		return
-	}
-
-	// The CRDT engine lets the server fold a document's journal into a single
-	// update once nobody is editing it. Without it the relay still works;
-	// journals just grow without bound, as they always have.
+	// The CRDT engine lets the server read and edit documents rather than only
+	// relay them: it folds a journal into one update once nobody is editing,
+	// and backs the MCP subcommand below.
 	engine, err := ydoc.New(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer engine.Close(context.Background())
+
+	// canvas createuser <username> <password> makes the first account, which
+	// cannot come through the API because that route requires a session.
+	if len(os.Args) > 1 {
+		if err := runCommand(ctx, authn, db, engine, protocol, os.Args[1:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 
 	assets, err := fs.Sub(frontend, "dist")
 	if err != nil {
@@ -108,7 +122,7 @@ func main() {
 
 // runCommand handles the few one-shot administrative commands. Anything that
 // needs a running server does not belong here.
-func runCommand(ctx context.Context, authn *auth.PasswordAuth, args []string) error {
+func runCommand(ctx context.Context, authn *auth.PasswordAuth, db *store.PostgresStore, engine *ydoc.Engine, protocol *os.File, args []string) error {
 	switch args[0] {
 	case "migrate":
 		// Migrations already ran before this switch; nothing left to do.
@@ -132,6 +146,32 @@ func runCommand(ctx context.Context, authn *auth.PasswordAuth, args []string) er
 		}
 		log.Printf("Deleted user %s", args[1])
 		return nil
+	case "mcp":
+		// Speaks the Model Context Protocol over stdin and stdout, so an
+		// assistant can work with this person's documents.
+		//
+		// The account is named on the command line rather than authenticated,
+		// because anyone who can run this already holds DATABASE_URL and could
+		// read the tables directly. What the name buys is that every request
+		// goes through the same membership checks as the web API rather than
+		// around them. A network transport would need a real credential; see
+		// the token discussion on the issue.
+		//
+		// This hub is this process's own, and the web server has another. An
+		// edit made here is journalled and durable, but nobody already
+		// connected to the web server will see it: Inject can only broadcast
+		// to sessions in its own process, and a client that still holds the
+		// older document may write over it. Live propagation needs the MCP
+		// server inside the web server, which needs the token work.
+		if len(args) != 2 {
+			return errors.New("usage: canvas mcp <username>")
+		}
+		user, err := authn.UserByUsername(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		return mcpserver.New(db, engine, relay.NewHub(db, engine), user).
+			Run(ctx, &mcp.IOTransport{Reader: os.Stdin, Writer: protocol})
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}

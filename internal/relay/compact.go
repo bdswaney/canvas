@@ -94,3 +94,37 @@ func (h *Hub) compactAfter(docID string) {
 		}
 	}()
 }
+
+// Inject journals an update that did not come from a connected client and
+// hands it to everyone editing the document.
+//
+// Without the broadcast, a write from outside the relay — an MCP client, say —
+// would be invisible to anybody with the document open until they next
+// reconnected: the journal would hold it, but no live session would have seen
+// it. Appending through the session also keeps Hub.history's cache in step, so
+// the next client to join is not served a journal missing the change.
+func (h *Hub) Inject(ctx context.Context, docID string, update []byte) error {
+	if len(update) == 0 {
+		return nil
+	}
+	h.mu.Lock()
+	session := h.sessions[docID]
+	h.mu.Unlock()
+
+	if session == nil {
+		// Nobody is editing, so there is nothing to broadcast and no cache to
+		// keep current.
+		if err := h.store.Append(ctx, docID, update); err != nil {
+			return fmt.Errorf("journal update: %w", err)
+		}
+		return nil
+	}
+
+	if err := h.append(ctx, session, update); err != nil {
+		return fmt.Errorf("journal update: %w", err)
+	}
+	// A nil sender means every client receives it; this update belongs to none
+	// of them.
+	session.broadcast(nil, syncFrame(syncUpdate, update))
+	return nil
+}

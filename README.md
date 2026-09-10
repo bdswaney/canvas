@@ -311,6 +311,49 @@ system.
 transactions, and it is mutation-tested: switching `Supersede` to a range
 retire makes it fail.
 
+## Model Context Protocol
+
+`canvas mcp <username>` speaks MCP over stdin and stdout, so an assistant can
+work with a person's projects and documents:
+
+```sh
+DATABASE_URL=... canvas mcp troy@cloud-team.com
+```
+
+Tools: `list_projects`, `list_documents`, `read_document`, `document_history`,
+`create_document`, `edit_document`.
+
+**Reads return the live document**, not the last save. The server can
+interpret the journal now, so "what does my document say" answers with what
+the author has on screen. A saved version is still reachable by naming it.
+
+**Edits go through the CRDT.** `edit_document` takes the whole new text —
+which is how a caller reasoning about a document thinks — but what reaches the
+journal is a minimal edit: the shared prefix and suffix are left alone, so
+somebody typing in another paragraph keeps their work. Nothing is saved to
+history; a person does that from the editor.
+
+**Membership still decides everything.** The account is named on the command
+line rather than authenticated, because anyone who can run this already holds
+`DATABASE_URL`. What the name buys is that every request goes through
+`store.ProjectMember` exactly as the web API does, rather than around it.
+Anything out of reach is reported as missing, never as forbidden.
+
+### The limitation worth knowing
+
+The subcommand is a **separate process from the web server**, with its own
+relay. An edit made through it is journalled and durable, and anybody who
+opens the document afterwards sees it — but somebody who *already* has it open
+will not, because a hub can only broadcast to sessions in its own process.
+Worse, their editor still holds the older document and may write over the
+change.
+
+So MCP edits are reliable for documents nobody is currently in, which is the
+usual case for an assistant working on somebody's behalf, and unreliable for
+one being actively edited. Fixing it means running the MCP server inside the
+web server over a network transport, which needs a real credential — the
+token work described on the issue.
+
 ## Accounts and sessions
 
 Authentication is username and password through `github.com/cccteam/session`, backed by the same Postgres pool as everything else. The HTTP route that creates users is itself behind authentication, so the first account is made from the command line:

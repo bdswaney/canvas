@@ -202,3 +202,20 @@ func (a *PasswordAuth) DeleteUser(ctx context.Context, username string) error {
 	}
 	return nil
 }
+
+// UserByUsername resolves a name to an account. Administrative commands take a
+// name because that is what a person knows; everything durable stores the id.
+func (a *PasswordAuth) UserByUsername(ctx context.Context, username string) (User, error) {
+	var user User
+	err := a.pool.QueryRow(ctx,
+		`SELECT "Id"::text, "Username" FROM "SessionUsers"
+		 WHERE "NormalizedUsername" = casefold(normalize($1)) AND NOT "Disabled"`,
+		username).Scan(&user.ID, &user.Username)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, fmt.Errorf("no account named %q", username)
+	}
+	if err != nil {
+		return User{}, fmt.Errorf("look up %q: %w", username, err)
+	}
+	return user, nil
+}
