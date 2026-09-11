@@ -15,6 +15,7 @@ package ydoc
 
 import (
 	"context"
+	"crypto/rand"
 	_ "embed"
 	"encoding/binary"
 	"fmt"
@@ -219,6 +220,22 @@ func (e *Engine) Text(ctx context.Context, state []byte, name string) (string, e
 	return string(body), err
 }
 
+// clientID returns a nonzero 32-bit client ID in the range supported by
+// Yjs. It is generated outside the Wasm instance because each instance has
+// its own deterministic random source.
+func clientID() (uint32, error) {
+	var raw [4]byte
+	for {
+		if _, err := rand.Read(raw[:]); err != nil {
+			return 0, fmt.Errorf("generate ydoc client ID: %w", err)
+		}
+		id := binary.LittleEndian.Uint32(raw[:])
+		if id != 0 {
+			return id, nil
+		}
+	}
+}
+
 // SetText edits a named Y.Text until it reads as next, and returns only the
 // update that change produced — what the caller journals and broadcasts.
 //
@@ -227,6 +244,10 @@ func (e *Engine) Text(ctx context.Context, state []byte, name string) (string, e
 // the whole document is how a caller that thinks in text rather than in CRDT
 // operations, such as an MCP client, expresses a change.
 func (e *Engine) SetText(ctx context.Context, state []byte, name, next string) ([]byte, error) {
+	id, err := clientID()
+	if err != nil {
+		return nil, err
+	}
 	return e.call(ctx, func(in *instance) (uint64, error) {
 		statePtr, stateLen, err := in.write(state)
 		if err != nil {
@@ -247,7 +268,8 @@ func (e *Engine) SetText(ctx context.Context, state []byte, name, next string) (
 		out, err := fn.Call(ctx,
 			uint64(statePtr), uint64(stateLen),
 			uint64(namePtr), uint64(nameLen),
-			uint64(nextPtr), uint64(nextLen))
+			uint64(nextPtr), uint64(nextLen),
+			uint64(id))
 		if err != nil {
 			return 0, fmt.Errorf("set text: %w", err)
 		}
