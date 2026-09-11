@@ -88,6 +88,16 @@ mise run build:server
 
 The executable is still named `bin/canvas`. It includes the frontend and Wasm module. It needs PostgreSQL at runtime, but not Node, Rust, or a separate `dist/` directory. Rebuild it after frontend changes. `mise run preview` is a frontend preview server, not a deployment command.
 
+The CLI provides help and shell completion without connecting to PostgreSQL:
+
+```sh
+./bin/canvas --help
+./bin/canvas token --help
+./bin/canvas completion bash
+```
+
+Run the binary without a subcommand to start the web server. Invalid commands and arguments return a nonzero exit status before database initialization.
+
 Run the production binary behind an HTTPS reverse proxy that supports WebSockets. Production cookies require HTTPS; do not deploy a binary built with `-tags insecurecookie`.
 
 | Variable | Purpose |
