@@ -107,13 +107,17 @@ func (h *Hub) Inject(ctx context.Context, docID string, update []byte) error {
 	if len(update) == 0 {
 		return nil
 	}
-	h.mu.Lock()
-	session := h.sessions[docID]
-	h.mu.Unlock()
 
+	// Keep the map lock through the append and broadcast. Otherwise a browser
+	// can create a session after we observe no session but before the journal
+	// row is written; its one-time history load can then miss the update and
+	// remain stale because Inject took the no-session path. Holding this lock
+	// also prevents a last-client removal from racing the same decision.
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	session := h.sessions[docID]
 	if session == nil {
-		// Nobody is editing, so there is nothing to broadcast and no cache to
-		// keep current.
+		// Nobody is editing, so there is no cache to keep current.
 		if err := h.store.Append(ctx, docID, update); err != nil {
 			return fmt.Errorf("journal update: %w", err)
 		}

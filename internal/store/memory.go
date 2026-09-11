@@ -249,6 +249,33 @@ func (s *MemoryStore) CreateDoc(_ context.Context, projectID, name string) (Doc,
 	return *doc, nil
 }
 
+func (s *MemoryStore) UpsertDoc(_ context.Context, projectID, sourceKey, name string) (Doc, bool, error) {
+	if sourceKey == "" {
+		return Doc{}, false, fmt.Errorf("source key is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.projects[projectID]; !ok || s.archived[projectID] {
+		return Doc{}, false, ErrNotFound
+	}
+	for _, doc := range s.docs {
+		if doc.ProjectID == projectID && doc.SourceKey == sourceKey && s.live(doc.ID, projectID) {
+			doc.Name = name
+			doc.UpdatedAt = time.Now()
+			return *doc, false, nil
+		}
+	}
+	doc := &Doc{
+		ID:        s.nextID(2),
+		ProjectID: projectID,
+		Name:      name,
+		SourceKey: sourceKey,
+		UpdatedAt: time.Now(),
+	}
+	s.docs[doc.ID] = doc
+	return *doc, true, nil
+}
+
 func (s *MemoryStore) SaveDoc(_ context.Context, docID string, save Save) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
