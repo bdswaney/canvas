@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -46,9 +48,10 @@ type documentOutput struct {
 }
 
 type readOutput struct {
-	DocumentID string `json:"documentId"`
-	Version    int    `json:"version"`
-	Text       string `json:"text"`
+	DocumentID  string `json:"documentId"`
+	Version     int    `json:"version"`
+	Text        string `json:"text"`
+	BaseVersion string `json:"baseVersion,omitempty"`
 }
 
 type versionView struct {
@@ -64,8 +67,10 @@ type historyOutput struct {
 }
 
 type editOutput struct {
-	DocumentID string `json:"documentId"`
-	Saved      bool   `json:"saved"`
+	DocumentID  string `json:"documentId"`
+	Saved       bool   `json:"saved"`
+	BaseVersion string `json:"baseVersion"`
+	Conflict    bool   `json:"conflict,omitempty"`
 }
 
 type saveOutput struct {
@@ -80,6 +85,12 @@ type upsertOutput struct {
 	SourceKey    string       `json:"sourceKey"`
 	Saved        bool         `json:"saved"`
 	SavedVersion int          `json:"savedVersion"`
+}
+
+type archiveOutput struct {
+	DocumentID string `json:"documentId"`
+	Name       string `json:"name"`
+	Archived   bool   `json:"archived"`
 }
 
 func documentViewOf(doc store.Doc) documentView {
@@ -119,7 +130,9 @@ func (s *Server) register(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:  "read_document",
 		Title: "Read a document",
-		Description: "Read a document's current text, including changes the author has not saved yet. " +
+		Description: "Read a document's current text, including changes nobody has saved yet. " +
+			"The result carries a baseVersion naming exactly the text that was read; pass it to edit_document " +
+			"so the edit is refused, rather than undoing somebody else's work, if the document changes in the meantime. " +
 			"Pass a version to read a specific saved version instead.",
 	}, s.readDocument)
 
@@ -139,7 +152,9 @@ func (s *Server) register(server *mcp.Server) {
 		Name:  "edit_document",
 		Title: "Edit a document",
 		Description: "Replace a document's live text without creating a saved history version. This is a collaborative edit, not an overwrite: " +
-			"the unchanged start and end are left alone, so somebody typing elsewhere keeps their work.",
+			"the new text is diffed against the current text and only the differences are applied, so somebody typing in text you left unchanged keeps their work. " +
+			"Pass the baseVersion from read_document: if the document has changed since that read, nothing is written and the current text comes back to redo the edit against. " +
+			"Without baseVersion, anything somebody changed after your read is reverted to the text you send.",
 	}, s.editDocument)
 
 	mcp.AddTool(server, &mcp.Tool{
@@ -153,6 +168,15 @@ func (s *Server) register(server *mcp.Server) {
 		Title:       "Import or update a document",
 		Description: "Create or update a document using a stable sourceKey. Repeating an import with the same project and sourceKey updates the existing document instead of creating a duplicate. Set save to true to create a history version after the live edit.",
 	}, s.upsertDocument)
+
+	destructive := true
+	mcp.AddTool(server, &mcp.Tool{
+		Name:  "archive_document",
+		Title: "Archive a document",
+		Description: "Archive a document. It stops appearing in list_documents and can no longer be read, edited, or saved through these tools, " +
+			"but it is not deleted: its saved versions are kept, the same as archiving it from the web app. There is no unarchive tool.",
+		Annotations: &mcp.ToolAnnotations{DestructiveHint: &destructive},
+	}, s.archiveDocument)
 }
 
 func (s *Server) listProjects(ctx context.Context, _ *mcp.CallToolRequest, _ noInput) (*mcp.CallToolResult, projectsOutput, error) {
@@ -229,18 +253,19 @@ func (s *Server) readDocument(ctx context.Context, _ *mcp.CallToolRequest, in re
 		}
 		return text(artifact), readOutput{DocumentID: in.DocumentID, Version: in.Version, Text: artifact}, nil
 	}
-	state, err := s.state(ctx, in.DocumentID)
+	_, body, err := s.liveText(ctx, in.DocumentID)
 	if err != nil {
 		return nil, readOutput{}, err
 	}
-	if len(state) == 0 {
-		return text(""), readOutput{DocumentID: in.DocumentID, Text: ""}, nil
-	}
-	body, err := s.docs.Text(ctx, state, textName)
-	if err != nil {
-		return nil, readOutput{}, err
-	}
-	return text(body), readOutput{DocumentID: in.DocumentID, Text: body}, nil
+	version := versionOf(body)
+	// The text is a block of its own, exactly as the document reads, so a
+	// caller that edits it and sends it back cannot pick up the version too.
+	// The version is repeated in text because not every client shows the model
+	// structured content.
+	return &mcp.CallToolResult{Content: []mcp.Content{
+		&mcp.TextContent{Text: body},
+		&mcp.TextContent{Text: fmt.Sprintf("baseVersion: %s (pass this to edit_document)", version)},
+	}}, readOutput{DocumentID: in.DocumentID, Text: body, BaseVersion: version}, nil
 }
 
 func (s *Server) documentHistory(ctx context.Context, _ *mcp.CallToolRequest, in docRef) (*mcp.CallToolResult, historyOutput, error) {
@@ -292,33 +317,31 @@ func (s *Server) createDocument(ctx context.Context, _ *mcp.CallToolRequest, in 
 }
 
 type editDocumentInput struct {
-	DocumentID string `json:"documentId" jsonschema:"the document's id, from list_documents"`
-	Text       string `json:"text" jsonschema:"the document's full new text"`
+	DocumentID  string `json:"documentId" jsonschema:"the document's id, from list_documents"`
+	Text        string `json:"text" jsonschema:"the document's full new text"`
+	BaseVersion string `json:"baseVersion,omitempty" jsonschema:"the baseVersion read_document returned for the text this edit starts from; if the document has changed since, nothing is written"`
 }
 
-// editLive turns a desired text into a CRDT edit and hands it to everyone
-// editing the document.
-//
-// The whole text is the input rather than a position and a span because that
-// is how a caller reasoning about a document thinks. What reaches the journal
-// is still a minimal edit: SetText leaves the shared prefix and suffix alone,
-// so a person typing in another paragraph keeps their work. Replacing the text
-// outright is what restore does, and restore is documented as unable to merge
-// for exactly this reason.
+// editLive turns a desired text into a CRDT edit against the document as it
+// is now and hands it to everyone editing the document.
 func (s *Server) editLive(ctx context.Context, docID, next string) (bool, error) {
-	state, err := s.state(ctx, docID)
+	state, current, err := s.liveText(ctx, docID)
 	if err != nil {
 		return false, err
 	}
-	if len(state) > 0 {
-		current, err := s.docs.Text(ctx, state, textName)
-		if err != nil {
-			return false, fmt.Errorf("read live text: %w", err)
-		}
-		if current == next {
-			return false, nil
-		}
-	} else if next == "" {
+	return s.apply(ctx, docID, state, current, next)
+}
+
+// apply writes next over the state current was read from.
+//
+// The whole text is the input rather than a position and a span because that
+// is how a caller reasoning about a document thinks. What reaches the journal
+// is still a minimal edit: SetText diffs current against next and applies each
+// hunk separately, so a person typing anywhere the caller did not change keeps
+// their work. Replacing the text outright is what restore does, and restore is
+// documented as unable to merge for exactly this reason.
+func (s *Server) apply(ctx context.Context, docID string, state []byte, current, next string) (bool, error) {
+	if current == next {
 		return false, nil
 	}
 	update, err := s.docs.SetText(ctx, state, textName, next)
@@ -349,17 +372,76 @@ func (s *Server) liveText(ctx context.Context, docID string) ([]byte, string, er
 	return state, body, nil
 }
 
+// editDocument applies a caller's full desired text.
+//
+// A diff cannot tell the caller's changes from changes somebody made after the
+// caller read the document: both are differences from the current text, and
+// the second kind would be silently reverted. baseVersion closes that gap by
+// refusing the edit when the text has moved on since the read. The check and
+// the write use the same state, so a keystroke that lands after the check is an
+// ordinary concurrent edit, which the CRDT merges.
+//
+// Refusing was chosen over rebasing (diffing the read text against the new one
+// and replaying that onto the current document). A rebase needs the text or
+// state that was read, and the server keeps neither: it cannot be rebuilt from
+// the journal, because compaction garbage-collects deleted content, and
+// carrying it in the token would make baseVersion kilobytes a caller has to
+// echo back exactly. Holding it in memory would make the tool rebase or refuse
+// depending on which process answered and whether it had restarted. A refusal
+// hands back the current text, so the caller can redo the edit against it.
 func (s *Server) editDocument(ctx context.Context, _ *mcp.CallToolRequest, in editDocumentInput) (*mcp.CallToolResult, editOutput, error) {
 	if _, err := s.allowed(ctx, in.DocumentID); err != nil {
 		return nil, editOutput{}, err
 	}
-	if _, err := s.editLive(ctx, in.DocumentID, in.Text); err != nil {
+	state, current, err := s.liveText(ctx, in.DocumentID)
+	if err != nil {
 		return nil, editOutput{}, err
 	}
-	return text(fmt.Sprintf("Edited %s. The change is live for anyone with it open, and is not in saved history until somebody saves.", in.DocumentID)), editOutput{
-		DocumentID: in.DocumentID,
-		Saved:      false,
+	if in.BaseVersion != "" {
+		if now := versionOf(current); now != in.BaseVersion {
+			return staleEdit(in.DocumentID, in.BaseVersion, current), editOutput{
+				DocumentID:  in.DocumentID,
+				BaseVersion: now,
+				Conflict:    true,
+			}, nil
+		}
+	}
+	if _, err := s.apply(ctx, in.DocumentID, state, current, in.Text); err != nil {
+		return nil, editOutput{}, err
+	}
+	// The version of the text the caller asked for, so a chain of edits needs
+	// no re-read. If somebody typed in the same instant it will not match, and
+	// the next edit is refused, which is the safe direction to be wrong in.
+	version := versionOf(in.Text)
+	return text(fmt.Sprintf("Edited %s; baseVersion is now %s. The change is live for anyone with it open, and is not in saved history until somebody saves.", in.DocumentID, version)), editOutput{
+		DocumentID:  in.DocumentID,
+		Saved:       false,
+		BaseVersion: version,
 	}, nil
+}
+
+// staleEdit is the refusal for an edit based on text that has since changed.
+// It is an error result that still carries the current text, because the
+// caller's next step is to redo the edit against it.
+func staleEdit(docID, base, current string) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		IsError: true,
+		Content: []mcp.Content{
+			&mcp.TextContent{Text: fmt.Sprintf("Nothing was written: %s has changed since baseVersion %s, "+
+				"and applying this text would undo those changes. Its current text follows, at baseVersion %s. "+
+				"Make the edit again against it.", docID, base, versionOf(current))},
+			&mcp.TextContent{Text: current},
+		},
+	}
+}
+
+// versionOf names a text for baseVersion. It is a hash of the text rather than
+// of the CRDT state, so it changes exactly when what a reader would see
+// changes: somebody typing a word and deleting it again leaves the version
+// alone, because an edit based on the earlier read would revert nothing.
+func versionOf(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:8])
 }
 
 type saveDocumentInput struct {
@@ -473,5 +555,29 @@ func (s *Server) upsertDocument(ctx context.Context, _ *mcp.CallToolRequest, in 
 		SourceKey:    in.SourceKey,
 		Saved:        in.Save,
 		SavedVersion: version,
+	}, nil
+}
+
+// archiveDocument hides a document the way the web app's archive does. Saved
+// versions are kept: store.ArchiveDoc marks the row rather than deleting it.
+// An archived document fails the membership check like a missing one, so
+// archiving it again is answered the same way as an unknown id.
+func (s *Server) archiveDocument(ctx context.Context, _ *mcp.CallToolRequest, in docRef) (*mcp.CallToolResult, archiveOutput, error) {
+	doc, err := s.allowed(ctx, in.DocumentID)
+	if err != nil {
+		return nil, archiveOutput{}, err
+	}
+	if err := s.store.ArchiveDoc(ctx, in.DocumentID); err != nil {
+		// Archived by somebody else since the check above: still missing, and
+		// still answered the same way.
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, archiveOutput{}, fmt.Errorf("no document %s", in.DocumentID)
+		}
+		return nil, archiveOutput{}, fmt.Errorf("archive: %w", err)
+	}
+	return text(fmt.Sprintf("Archived %s\t%s. It no longer appears in list_documents; its saved versions are kept.", doc.ID, doc.Name)), archiveOutput{
+		DocumentID: doc.ID,
+		Name:       doc.Name,
+		Archived:   true,
 	}, nil
 }

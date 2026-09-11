@@ -178,14 +178,21 @@ Stdio runs in a separate process with its own relay. Its edits are stored, but d
 | `list_projects` | List the account's projects, with structured project metadata. |
 | `create_project` | Create a project and become its first member. |
 | `list_documents` | List accessible documents, optionally within one project, with structured metadata. |
-| `read_document` | Read live text, including unsaved edits, or a specified saved version. |
+| `read_document` | Read live text, including unsaved edits, or a specified saved version. Live reads also return a `baseVersion`. |
 | `document_history` | List saved versions and their authors. |
 | `create_document` | Create an empty document in a project. |
-| `edit_document` | Apply a desired full-text value as a collaborative live edit without creating history. |
+| `edit_document` | Apply a desired full-text value as a collaborative live edit without creating history. Pass `baseVersion` to refuse the edit if the document changed since it was read. |
 | `save_document` | Save the current live text as a new history version. |
 | `upsert_document` | Create or update an imported document by stable `sourceKey`; optionally save it in one call. |
+| `archive_document` | Hide a document while keeping its saved versions. Marked destructive so clients can ask first. |
 
-MCP `edit_document` calls update live text but do not create saved versions. Use `save_document` or Save in the browser to add the current text to history. `upsert_document` is intended for repeatable imports: its `sourceKey` is stable within a project, so repeating the call updates the existing document instead of creating a duplicate. It preserves the shared prefix and suffix but rewrites everything between them; scattered changes can therefore affect a large span of the document. There are no search or archive tools yet.
+MCP `edit_document` calls update live text but do not create saved versions. Use `save_document` or Save in the browser to add the current text to history. `upsert_document` is intended for repeatable imports: its `sourceKey` is stable within a project, so repeating the call updates the existing document instead of creating a duplicate.
+
+Edits are diffed against the current text, by line and then by character, and each change is applied separately. Text an edit leaves unchanged keeps its identity, so people typing there keep their work and their cursor position.
+
+A diff cannot tell a client's change from one somebody else made after the client read the document, so `read_document` returns a `baseVersion` (a hash of the text it read) and `edit_document` accepts it back. If the text has changed since, nothing is written and the result carries the current text and its `baseVersion`; redo the edit against that. Without `baseVersion`, the text is applied to the document as it is now, which reverts any change the client did not see. Stale edits are refused rather than rebased because the server does not keep the text a client read.
+
+An archived document no longer appears in `list_documents` and cannot be read, edited, saved, or archived again through MCP; unknown and inaccessible ids get the same answer. There is no search tool yet.
 
 ## Documents and access
 
