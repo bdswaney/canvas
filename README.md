@@ -1,480 +1,222 @@
-# Canvas
+# nPly
 
-A collaborative artifact workspace built with Go and TypeScript. The initial focus is shared state and synchronization, before editing UI or rendering.
+nPly is a collaborative Markdown workspace built with Go, React, and TypeScript. Organize documents into projects, edit together in real time, and save versions to a shared history. MCP clients can read and edit documents alongside browser users.
 
-## Toolchain
+The editor uses CodeMirror and Yjs, with a GitHub-flavored Markdown preview, shared cursors, and undo for your own edits. PostgreSQL stores accounts, documents, saved versions, and live edits. The Go server serves the web app, collaboration relay, and MCP endpoint from one binary.
 
-Mise is the entry point for project tooling and commands. Go, Node.js, and Air versions are pinned in `mise.toml`; npm comes with Node.js. Install mise before continuing.
+## Quick start
 
-From the repository root:
+Install [Mise](https://mise.jdx.dev/getting-started.html) and Docker. The local database task uses Docker; you can use an existing **PostgreSQL 18 or newer** instance instead.
 
 ```sh
+git clone https://github.com/bdswaney/nPly.git
+cd nPly
+
 mise trust
 mise install
-mise run doctor
-```
+mise run deps
+mise run build
 
-Run tools through mise to use the pinned versions without changing your shell configuration:
-
-```sh
-mise exec -- go version
-mise exec -- node --version
-mise exec -- npm --version
-```
-
-Optionally enable automatic tool selection in Bash by adding `eval "$(mise activate bash)"` to `~/.bashrc`.
-
-## Dependency policy
-
-- Declare development tools and runtimes in `mise.toml` with exact versions. Do not rely on globally installed Go, Node.js, or npm.
-- Manage JavaScript/TypeScript libraries with npm through mise; commit `package.json` and `package-lock.json` when introduced. Use `mise exec -- npm ci` for reproducible installs once a lockfile exists.
-- Manage Go libraries with Go modules through mise; commit `go.mod` and `go.sum` when introduced.
-- Define repeatable project workflows as mise tasks as implementation is added. CI should use the same pinned tools and tasks.
-- Do not commit credentials or machine-specific overrides. Use ignored `mise.local.toml` for local overrides.
-
-## Navigation
-
-The app shell is a two-column navbar: a rail of the two things Canvas has — projects and documents — and the contents of whichever is selected. A document is always a project's, so opening one by link has to ask the server which project it belongs to before the navbar can show its neighbours; the URL does not carry it.
-
-Selecting in the rail and following a link both move it: the route leads and the rail follows, rather than the two holding separate ideas of where you are. Below `sm` the navbar collapses behind a burger and closes itself when a link is followed.
-
-The navbar is navigation; a project's own page is where things are created, archived, and its members managed.
-
-The frontend is grouped the same way the server is:
-
-| Folder | Holds |
-|---|---|
-| `src/app` | the shell, the navbar, and routing |
-| `src/api` | the fetch wrapper, the session, and one module per resource |
-| `src/collab` | the Yjs layer: the provider, awareness, and remote pointers |
-| `src/editor` | CodeMirror, the Markdown preview, and their styling |
-| `src/components` | pieces used on more than one screen |
-| `src/pages` | one file per route |
-
-`src/api/client.ts` is the fetch wrapper and nothing else; `src/api/session.ts` is the session calls together with the hook over them, which were previously split across two files for no reason.
-
-Icons come from `@tabler/icons-react`, imported by name so the bundle carries only the ones used — verified by checking that a used glyph is present in the built asset and an unused one is not.
-
-The Go binary embeds `dist/`, and `go:embed` has twice served a stale copy in this repo after a rebuild. After `mise run build:server`, confirm the binary really has the current frontend:
-
-```sh
-strings bin/canvas | grep -o 'index-[A-Za-z0-9_-]*\.js' | sort -u   # must match dist/assets/
-```
-
-## Frontend
-
-The frontend uses React, TypeScript, Vite, and Mantine's off-the-shelf components. It contains a sign-in screen, an application shell, a connection status header, light and dark schemes, live peer pointers, and a collaborative Markdown editor bound to a Yjs document, with a rendered preview beside it.
-
-```sh
-mise run deps       # install dependencies from package-lock.json
-mise run dev        # start Vite; open the URL printed in the terminal
-mise run typecheck  # check TypeScript
-mise run build      # type-check and build into dist/
-mise run preview    # serve the existing build locally (not for production)
-```
-
-`src/main.tsx` loads Mantine's styles and provider. `src/App.tsx` holds the session gate and the one route shape the app has, `/doc/<id>`; `src/DocPicker.tsx` lists and creates documents and `src/Workspace.tsx` is the editor, preview, save button, and history drawer. `src/sync.ts` holds `useSync`, which owns one `Y.Doc`, its awareness state, and its relay connection, plus `useSharedText`, which hands out a named `Y.Text`. `src/api.ts` and `src/useSession.ts` handle sign-in and keep the session alive, `src/presence.ts` and `src/Cursors.tsx` add live pointers, `src/Editor.tsx` with `src/markdown.ts` binds a `Y.Text` to a Markdown-aware CodeMirror, and `src/Preview.tsx` renders that text beside it.
-
-`mise run dev` proxies `/api` (WebSockets included) to `http://127.0.0.1:8080`, so run `mise run serve` alongside it when working on the frontend.
-
-## Collaboration relay
-
-`/api/sync/doc/{docID}` is a WebSocket endpoint speaking the y-websocket protocol, one socket per document. A socket for a document that does not exist is closed with code 4404 rather than conjuring a journal nothing can read.
-
-The server does not interpret document contents. It keeps an append-only journal of Yjs updates per document, replays that journal to each joining client, and broadcasts every new update to the document's other clients. Yjs updates are idempotent and commutative, so replaying the log reconstructs the document. Awareness (presence) frames are relayed but never stored.
-
-```
-client                                  server
-  |  <-- sync step 1 (empty vector) ------|   asks for state the client already has
-  |  --- sync step 1 (state vector) ----->|
-  |  <-- sync step 2 (each logged update) |   replayed history
-  |  <-- sync step 2 (empty update) ------|   marks the client synced
-  |  <-> update / awareness ------------->|   relayed to the other clients
-```
-
-**The journal is now compacted.** When a document's last client disconnects,
-the server folds its live journal into a single update carrying the same
-document — 278 rows into one, on a real document here, replaying to identical
-text. See "Compacting the journal" below.
-
-The journal grows with every keystroke and every connection. Saving does **not** trim it — see the note under Saving below. Measured on a document with 399 updates, a joining client is sent 400 frames totalling 41 kB, replayed from memory in about 4 ms on loopback — cheap now, but it grows without limit and every joining client pays it. That growth is what compaction now removes.
-
-## Editing and carets
-
-`src/Editor.tsx` binds a `Y.Text` to CodeMirror 6 through `y-codemirror.next`, which handles character-level synchronization in both directions and draws every peer's caret and selection in the color that peer publishes. Undo is scoped to each client's own edits with a `Y.UndoManager`, so undo never reverts someone else's typing.
-
-`src/markdown.ts` adds Markdown parsing and the editing commands that come with it: Enter continues a list or blockquote, and Backspace at the start of an item removes the marker. The grammar's GFM bundle is enabled, which adds tables, task lists, strikethrough, and bare-URL autolinks. Note that GFM table headers carry the generic `heading` tag rather than `heading1`-`heading6`, so they need their own highlight rule. Styling leans on weight and size rather than color, and dims the `#`, `*`, and `` ` `` markers so they stop competing with the text. The document is Markdown source, not a rendered preview; rendering is still out of scope.
-
-## Color scheme
-
-The app starts on `auto`, following the system, and the header toggle sets a scheme explicitly; Mantine remembers the choice. An inline script in `index.html` applies the stored scheme before React mounts so a reload does not flash the wrong one — Mantine ships that script for server rendering only, so this repeats its logic against the same storage key.
-
-The editor follows along. Its own colors come from Mantine's CSS variables, and the Markdown highlight style has a light and a dark variant, each scoped with `themeType` so exactly one matches — an unscoped style applies to both schemes and wins on precedence, which is easy to miss because the light scheme still looks right. Toggling reconfigures the theme through a CodeMirror compartment rather than rebuilding the editor, so the document, selection, and peers' carets stay put.
-
-Peer colors are mid tones that read on either background, and remote selections use a translucent tint of the peer's color instead of a pastel: a peer publishes one color to viewers on both schemes.
-
-## Preview
-
-`src/Preview.tsx` renders the shared Markdown through remark, beside the editor on wide screens and below it on narrow ones. `remark-gfm` keeps the preview reading the same dialect the editor highlights, so tables, task lists, strikethrough, and autolinks mean the same thing on both sides. Note that this is a second parser: the editor highlights with Lezer's incremental grammar, and the preview parses the whole document with remark. They agree on GFM by configuration, not by construction.
-
-The document is written by one person and rendered in everyone else's browser, so it is treated as untrusted. Raw HTML in the source is never parsed (`rehype-raw` is deliberately not installed, so a `<script>` tag renders as nothing at all), `rehype-sanitize` drops anything outside its allowed schema, and react-markdown rejects `javascript:`, `data:`, and `vbscript:` URLs, leaving the link text with no `href`.
-
-Rendering is driven by `useTextSnapshot`, which mirrors the `Y.Text` into React state on a trailing 150 ms debounce, so a burst of keystrokes — local or from a peer — costs one parse rather than one per character.
-
-## Presence and cursors
-
-Every client publishes an identity and its pointer position on the awareness channel. The identity is the signed-in username, with a color derived from it by hashing, so a person looks the same to everyone on every device with nothing to keep in sync. Pointers use a `pointer` field because `y-codemirror.next` owns `cursor` for text selections. Pointer positions are stored as fractions of the shared surface rather than pixels, so a cursor lands in the same place on a differently sized window, and are coalesced to one update per animation frame. Awareness state is never persisted: the server relays it and forgets it.
-
-A closing tab announces its own departure on `pagehide`, because y-websocket only does that automatically under Node; without it a departed peer would linger until awareness times it out after 30 seconds.
-
-## Projects and documents
-
-A **project** contains documents and the people who can reach them. That is the whole hierarchy.
-
-```
-GET    /api/projects                       list projects
-POST   /api/projects                       create one
-DELETE /api/projects/{id}                  archive one
-```
-
-Because a document changes over REST with no socket to announce it, the project screen and the navbar refetch when the tab is looked at again, the same way a document picks up saves made elsewhere.
-
-## Archiving
-
-Nothing is deleted. `DELETE /api/projects/{id}` and `DELETE /api/docs/{id}` set a `deleted_at` timestamp, which hides the row from every read path.
-
-This is not squeamishness. `projects` cascades to `docs`, which cascades to `doc_versions`, so a real delete of a project would destroy the saved history under it — and history is the one layer of Canvas that cannot be rebuilt. Everything else, the journal and the CRDT state, is derivable from it.
-
-Archiving a project hides its documents with it, including ones that were never archived themselves. `ProjectMember` is where that is enforced: it returns false for an archived project, so the one gate every handler already shares also covers this rather than each caller remembering.
-
-Two places where an archived row would otherwise stay usable, both invisible to a test that only checks the endpoint:
-
-- `Doc` excludes archived documents, because that is the existence check the **collaboration socket** makes before accepting a connection. An archived document that still resolved there would be one people kept editing live.
-- `SaveDoc` guards its version bump on `deleted_at IS NULL`, or a save into an archived document would quietly write history.
-
-**There is no un-archive yet.** Nothing is lost and restoring one is an `UPDATE` away, but it needs a decision first about what restoring a document inside a still-archived project should mean.
-
-## Documents, saving, and history
-
-A document belongs to a project and has an immutable history of saved versions. Editing is live for everyone in the document, but nothing enters that history until someone saves.
-
-```
-GET    /api/docs[?projectId=]        list documents, optionally within one project
-POST   /api/docs                     create one
-GET    /api/docs/{id}                metadata, including the hash of the last saved artifact
-POST   /api/docs/{id}/save           commit a version
-GET    /api/docs/{id}/versions       history, newest first
-POST   /api/docs/{id}/restore/{n}    hand back version n's artifact
-```
-
-**Saves are client-authored**, because the Go server has no Yjs and cannot merge updates or encode a snapshot. A save carries two things: the `artifact` (the Markdown text, which is what history stores and people read) and a `snapshot` (`Y.encodeStateAsUpdate`, the CRDT state it came from). Both are read in the same tick — the preview's debounced snapshot would store history that disagrees with the document. The version number is assigned by the server as `current_version + 1` in the same transaction that writes the row, so two clients saving at once cannot collide.
-
-**Saving deletes nothing from the journal.** Trimming it is only a size optimization — replay is idempotent, so stale rows cost bytes — and it cannot be done correctly yet: it needs to know which rows the saving client had seen, and nothing in the y-websocket protocol carries row ids. Adding a data-loss risk to save space we have already decided to spend is the wrong trade, so the snapshot is written for restore, and replay stays journal-only.
-
-**Whether a document has unsaved changes is a client-side hash comparison** of the current text against `doc_state.artifact_sha256`. The tempting server-side test — "the journal has rows" — is wrong three ways: rows outlive a save, a word typed and deleted leaves rows with identical text, and merely opening a document appends a full sync frame, so every document would read dirty with no edits at all.
-
-**Restoring hands the artifact back to the client**, which writes it into the live document and saves the result as a new version. The server cannot rebuild CRDT state from text, and history is never rewritten. Note that this is an edit rather than a rollback: the restore is a replace applied to the shared text, so a peer typing during it has their keystrokes merged into the restored text instead of discarded. Everyone converges on the same result, but that result is the restored version only if nobody else was mid-keystroke.
-
-People are referenced by `SessionUsers.Id` and never by username, because usernames are mutable — the session package renames them in place. The username is joined in for display.
-
-## Persistence
-
-Documents, their saved versions, and their update journals are stored in Postgres. `DATABASE_URL` is required: accounts and document history both live there.
-
-```sh
-mise run db       # start a local Postgres container on 127.0.0.1:5432
-mise run db:stop  # stop it
+mise run db
 export DATABASE_URL='postgres://canvas:canvas@127.0.0.1:5432/canvas?sslmode=disable'
-mise run migrate  # apply migrations (the server also does this at startup)
+
+mise run createuser alice 'replace-with-a-local-password'
+mise run serve
 ```
 
-`mise run test` skips the Postgres half of the store suite unless `DATABASE_URL` is set; every other test uses the in-memory store, which is kept for exactly that reason. `TestStores` runs one suite against both implementations and asserts *which* id and *which* name come back rather than how many rows, because the two have drifted before — `Version.Author` once held an id in memory and a username in Postgres, and a test that only counted rows saw nothing.
+Open <http://127.0.0.1:8080>, sign in, and create a project and document.
 
-## Migrations
+The first account must be created from the command line. Replace the example password before running the command; CLI passwords are visible in shell history and process arguments. Migrations run automatically when the server or an administrative command starts.
 
-Schema lives in `internal/migrate/migrations/`, embedded in the binary and applied at startup with golang-migrate. There are two independent sets, each with its own migrations table, so they can be numbered independently:
+`mise run serve` watches the source with Air, rebuilds the app, and restarts the server. It uses a development build that allows session cookies over plain HTTP. Refresh the browser after a rebuild.
 
-- `migrations/app` under it (`schema_migrations`) — this application's tables.
-- `migrations/session` under it (`session_schema_migrations`) — copied verbatim from `github.com/cccteam/session`, because `go:embed` cannot reach into the module cache. Re-copy them when upgrading that module; the header comment in each file records where they came from.
+The initial `mise run build` creates `dist/`, which Go embeds at compile time. It is required before running Go commands on a fresh checkout, including `createuser` and `migrate`.
 
-The app set depends on the session set: `doc_versions.author_id` and `project_members.user_id` both reference `"SessionUsers"("Id")`. Roll the app set back before the session set, or the drop fails on a foreign key and reports it against the wrong migration.
+## Development
 
-`SessionUsers` uses `casefold()`, which requires **PostgreSQL 18 or newer**. The server checks `server_version_num` before running any migration and refuses to start on anything older, because otherwise the failure arrives partway through the session migrations as a syntax error pointing at the wrong thing. The development container is already `postgres:18-alpine`.
-
-## Membership
-
-**Membership in a project is the authorization boundary.** A document is reachable only by members of the project it belongs to. `docs.project_id` is `NOT NULL`, so every document has exactly one project and the gate is a single join.
-
-```
-GET    /api/users                              every account, for the member picker
-GET    /api/projects/{id}/members              who is in a project
-POST   /api/projects/{id}/members              add somebody
-DELETE /api/projects/{id}/members/{userID}     remove them
-```
-
-The lists that would otherwise leak the existence of other people's work — projects and documents — are filtered in SQL by the person asking. Every single-row read and write is gated in the handler instead, so there is one copy of the rule rather than one per store. **Refusals are answered as `404`, never `403`**, so that ids cannot be probed for existence.
-
-Four things that are decisions rather than consequences of the design:
-
-- **The migration seeds every account that existed into every project that existed.** That preserves exactly what was true the moment before it ran — everyone could see everything — and applies only to rows that already existed. Accounts and projects created afterwards get memberships explicitly.
-- **Creating a project joins it.** This one is forced: otherwise you could not see what you had just made.
-- **There are no roles.** Any member can add or remove any other, including the person who created the project. That is the same trust assumption the save endpoint already makes, and it means membership is a decision the whole group shares.
-- **A project cannot be emptied.** The last member cannot leave, because a project with nobody in it is unreachable by anyone who could put it right.
-
-`GET /api/users` shows every username to every signed-in person. That is a real disclosure, and it is deliberate: there is no way to grant access to somebody you cannot name, and the alternative is inviting by exact spelling with no feedback. Revisit it if Canvas ever holds more than one organisation.
-
-Known gap: removing somebody does not close the sockets they already have open. They lose access at their next reconnect, like a signed-out session.
-
-## Reading and editing documents on the server
-
-For most of its life the server could not interpret a document. It relayed
-update bytes it could not read, which is why saves are client-authored, why
-restore hands text back to a client, and why the journal has never been
-compacted.
-
-`internal/ydoc` removes that limitation. It runs [yrs](https://github.com/y-crdt/y-crdt),
-the Yjs organisation's Rust port, compiled to WebAssembly and executed by
-[wazero](https://github.com/tetratelabs/wazero) — a pure-Go runtime, so this
-needs no cgo and `CGO_ENABLED=0` still produces a single static binary. The
-compiled module is committed as `internal/ydoc/ydoc.wasm` (about 240 kB), so
-building or testing the server needs no Rust toolchain; `mise run build:ydoc`
-regenerates it after a change under `internal/ydoc/shim/`.
-
-The interface is deliberately stateless — no document handles cross into
-WebAssembly, so there is no lifecycle to manage and nothing leaks when a call
-fails:
-
-- `Merge` collapses a sequence of updates into one, which is what compaction
-  will store in place of the rows it replaces.
-- `Text` reads a named `Y.Text`.
-- `SetText` edits a document until it reads as the given text, and returns
-  only the update that change produced.
-
-`SetText` is an **edit, not a replacement**. The shared prefix and suffix are
-left alone and only the span between them is rewritten, so somebody typing in
-another paragraph keeps their work. Contrast `restore`, which really is a
-replace and is documented as such because it cannot merge.
-
-### yrs is not yjs
-
-It is a second implementation of the same format, and a disagreement between
-the two does not surface as a failed request — it silently corrupts a document
-that the browsers and the server no longer read the same way. So the
-compatibility claim is demonstrated rather than assumed:
-`internal/ydoc/conformance_test.go` drives the **real `yjs` from
-`node_modules`** through `testdata/yjs.mjs` and compares both directions —
-what the server writes read by yjs, what yjs writes read by the server,
-concurrent edits from both sides converging, and merges matching.
-
-The sharpest edge is offsets. yrs counts bytes by default; yjs in the browser
-counts UTF-16 code units. Left at the default, every index in a document
-containing anything but ASCII disagrees with the clients. Removing that one
-setting and running the suite turns `"👍👍 middle end"` into
-`"👍👍 mi endddle"` — which is exactly the kind of silent corruption the suite
-exists to catch, and why the tests edit documents that already contain
-accented characters and emoji rather than only empty ones.
-
-## Compacting the journal
-
-Every keystroke appends a row, and so does every connection — y-websocket
-reconnects on any network blip and answers with a full `syncStep2` copy of the
-document. Nothing used to remove a row, and every joining client replayed all
-of them.
-
-`Hub.Compact` merges a document's live journal into one update through
-`internal/ydoc`. Two choices make it safe:
-
-**It only runs when nobody is connected.** `Hub.history` caches the journal for
-the life of a session, so compacting underneath a live one would leave the
-cache serving rows the store had already retired. Waiting for the last client
-to leave sidesteps the cache and most of the concurrency together.
-
-**Rows are marked, not deleted.** `superseded_at` takes them out of replay and
-leaves them in the table, so a merge that ever proves wrong is one `UPDATE`
-away from being undone. Actually deleting them is a later, separate change —
-this is the first operation in Canvas that could destroy data, and a mistake
-would not surface as an error but as a document that replays into different
-text for everyone who joins afterwards.
-
-### The identity-visibility race
-
-`Supersede` takes the exact ids it merged rather than a range, and that is
-load-bearing. `doc_updates.id` is an identity column: the value is assigned at
-`INSERT` but only becomes visible at `COMMIT`, so a row with a *lower* id can
-appear after a reader has already seen a higher one. `DELETE ... WHERE id <=
-max` would retire an update that was never merged, silently. Naming the ids
-means a row that commits late is simply not in the list and survives — no
-locking, and nothing added to `Append`, which is the hottest path in the
-system.
-
-`TestSupersedeKeepsARowThatCommitsLate` reproduces this with real overlapping
-transactions, and it is mutation-tested: switching `Supersede` to a range
-retire makes it fail.
-
-## Model Context Protocol
-
-`canvas mcp <username>` speaks MCP over stdin and stdout, so an assistant can
-work with a person's projects and documents:
+Tool versions and repeatable commands live in [mise.toml](mise.toml). Use Mise rather than relying on Go or Node from your shell's `PATH`.
 
 ```sh
-DATABASE_URL=... canvas mcp troy@cloud-team.com
+mise run doctor        # check installed tools
+mise run typecheck     # check TypeScript
+mise run build         # type-check and build the frontend
+mise run dev:server    # build and run once, without the watcher
+mise run db:stop       # stop the local database container
 ```
 
-Tools: `list_projects`, `list_documents`, `read_document`, `document_history`,
-`create_document`, `edit_document`.
-
-**Reads return the live document**, not the last save. The server can
-interpret the journal now, so "what does my document say" answers with what
-the author has on screen. A saved version is still reachable by naming it.
-
-**Edits go through the CRDT.** `edit_document` takes the whole new text —
-which is how a caller reasoning about a document thinks — but what reaches the
-journal is a minimal edit: the shared prefix and suffix are left alone, so
-somebody typing in another paragraph keeps their work. Nothing is saved to
-history; a person does that from the editor.
-
-**Membership still decides everything.** The account is named on the command
-line rather than authenticated, because anyone who can run this already holds
-`DATABASE_URL`. What the name buys is that every request goes through
-`store.ProjectMember` exactly as the web API does, rather than around it.
-Anything out of reach is reported as missing, never as forbidden.
-
-### Two ways to serve it
-
-**Over HTTP, at `/api/mcp`** — the one to prefer. It runs inside the web
-server, so it shares the relay's hub and an edit reaches somebody who already
-has the document open, live, with no reload. It authenticates with an access
-token (below).
-
-```
-Authorization: Bearer canvas_pat_...
-```
-
-**Over stdio, as `canvas mcp <username>`** — convenient for a local client,
-and it needs no token because anyone who can run it already holds
-`DATABASE_URL`. The catch is that it is a **separate process with its own
-relay**: an edit is journalled and durable, and anybody who opens the document
-afterwards sees it, but somebody who *already* has it open will not, and their
-editor may write over it. Prefer HTTP when a document might be in use.
-
-## Access tokens
-
-The session cookie is `SameSite=Strict`, carries an XSRF token, and expires
-after ten minutes of HTTP silence. All three are right for a browser and wrong
-for a long-lived program, which holds no cookie jar and has no XSRF cookie to
-echo. Tokens are what such a client can hold.
+For frontend hot reload, keep the Go server running and start Vite in another terminal:
 
 ```sh
-mise run token create troy@cloud-team.com "laptop"   # prints the token, once
-mise run token list troy@cloud-team.com
-mise run token revoke <token id>
+mise run dev
 ```
 
-- **Only a hash is stored.** The token is visible exactly once, when it is
-  created; a lost token is replaced, not recovered. They are high-entropy
-  random values rather than passwords, so a plain sha256 is the right choice —
-  bcrypt and argon2 exist to slow down guessing a human-chosen secret, and
-  there is nothing here to guess.
-- **A token resolves to an account** and lands in the request context in the
-  same shape session validation uses, so every membership check downstream
-  cannot tell the two apart. There is no second authorization path.
-- **Revoking marks rather than deletes**, so a token that was used stays
-  accountable for what it did. Expiry and revocation are checked in the lookup
-  query, so a lapsed token is indistinguishable from one that never existed.
-- **No XSRF check on the token route**, deliberately. XSRF defends against a
-  browser attaching a credential by itself; a bearer token is only ever sent by
-  a client that was told to send it. `/api/mcp` is mounted outside the browser
-  middleware for the same reason — `SetXSRFToken` would answer every call with
-  a 307.
+Open the URL Vite prints. It proxies `/api`, including WebSockets, to `http://127.0.0.1:8080`. If you change the backend address, update the target in [vite.config.ts](vite.config.ts).
 
-## Accounts and sessions
+Keep `DATABASE_URL` available in every shell that runs the server or administrative commands. Put machine-specific overrides in the ignored `mise.local.toml`; do not commit credentials. Commit dependency changes with their lockfiles: `package-lock.json`, `go.sum`, and the Rust shim's `Cargo.lock`.
 
-Authentication is username and password through `github.com/cccteam/session`, backed by the same Postgres pool as everything else. The HTTP route that creates users is itself behind authentication, so the first account is made from the command line:
+### Tests
 
 ```sh
-mise run createuser alice hunter2hunter2
+mise run test
 ```
 
-That leaves the password in shell history and in `ps` output, which is acceptable for bootstrapping a development database and not for anything else.
+This builds the frontend and runs `go test ./...`. Database-backed store, token, and session integration tests require `DATABASE_URL`; they are skipped when it is unset. Use a separate, disposable PostgreSQL database for tests, not a production database.
 
-Removing one is `mise run deleteuser alice`, which deletes the account and expires its sessions. It will refuse while anything still references the account: saved versions hold the author's `SessionUsers.Id`, and the foreign key is what keeps history honest, so reassign or delete that work first.
+The Yjs conformance tests run Node against the installed `yjs` package. Run `mise run deps` first; those tests are skipped if `node_modules/yjs` is missing.
 
-Endpoints live under `/api/session`: `GET` reports who you are, `POST` signs in, `DELETE` signs out. Set `COOKIE_KEY` to base64 of at least 32 random bytes (`head -c 32 /dev/urandom | base64`); leave it unset and the session package generates one at startup and prints it, which invalidates every session on restart.
+### Rebuilding the Yjs engine
 
-Three things about this integration are easy to trip over:
+The server runs the Rust [yrs](https://github.com/y-crdt/y-crdt) library as WebAssembly through [wazero](https://github.com/tetratelabs/wazero). The compiled module is checked in at `internal/ydoc/ydoc.wasm`, so normal Go builds and tests do not need a Wasm rebuild.
 
-- **The process is pinned to UTC** in `main.go`. Session rows are `timestamp without time zone`: the store writes local wall-clock time and reads it back as UTC. Run it anywhere but UTC without that line and every session looks hours old, so logins succeed and then immediately report as unauthenticated.
-- **Development builds need `-tags insecurecookie`.** Without it session cookies are marked `Secure` and never survive a plain-http localhost login. `mise run serve` and `mise run dev:server` set it and write `bin/canvas-dev`; `mise run build:server` deliberately does not, so the deployable `bin/canvas` keeps secure cookies. The development build also works behind the HTTPS tunnel, which is the combination most likely to be running: its cookies are `SameSite=Strict` and simply omit `Secure`, which a browser accepts over HTTPS.
-- **The dependency is not free.** Adding the session package takes the server binary from 19 MB to 58 MB, because its storage layer links the Spanner client and gRPC even though this app only ever uses the Postgres path.
-
-Authenticated routes are grouped as `StartSession` → `SetXSRFToken`, then `ValidateSession` and `ValidateXSRFToken` for anything that writes. Sign-in cannot sit behind session validation, since there is no session yet. The XSRF token round-trips as a cookie the client copies into the `X-XSRF-TOKEN` header; the app calls `GET /api/session` at startup so the cookie exists before the first write, avoiding a redirect that would re-send the request body.
-
-## Authenticating the collaboration socket
-
-The WebSocket route is authenticated but carries no XSRF check, because a browser cannot set headers on a WebSocket handshake. What protects it is the session cookie being `SameSite=Strict`, so a cross-site handshake arrives with no cookie at all; the `Origin` check sits behind that.
-
-The session is checked *after* the upgrade, and a socket without one is closed with code **4401**. y-websocket treats 4400-4499 as permanent and stops reconnecting; a rejected handshake would instead look like a network failure and be retried forever. The client listens for that code and returns to the login screen.
-
-Three close codes are in that permanent range:
-
-| Code | Meaning | What the client does |
-|---|---|---|
-| 4401 | The session has lapsed | Re-checks the session and shows the login screen |
-| 4404 | No such document | Says so, and stops |
-| 4405 | Not a member of the document's project | Says so, and stops |
-
-A permanent close is explained on screen rather than left as "disconnected", which is otherwise indistinguishable from a network problem the client will never retry out of.
-
-Authorization is the project membership check, which the socket makes itself, because a live socket bypasses every REST handler.
-
-Sessions expire after ten minutes without an HTTP request, and only HTTP requests refresh them — someone typing over a WebSocket makes none. The client therefore polls `GET /api/session` every two minutes, and whenever a tab becomes visible again.
-
-Two known gaps: the session is validated when the socket opens, not continuously, so signing out elsewhere does not close sockets that are already connected — they keep working until they reconnect. The same is true of membership: removing somebody leaves their open sockets alive until they next reconnect.
-
-## Sharing a local server with ngrok
+After changing `internal/ydoc/shim/`, use the pinned Rust toolchain and install its Wasm target:
 
 ```sh
-mise run tunnel   # ngrok http 8080; set PORT to expose a different port
+mise exec -- rustup target add wasm32-wasip1
+mise run build:ydoc
+mise exec -- go test ./internal/ydoc -count=1
 ```
 
-The client derives its WebSocket scheme from the page, so the relay works over a tunnel's HTTPS origin without configuration. The server checks the `Origin` header against the request host and additionally allows `*.ngrok-free.dev`, `*.ngrok-free.app`, `*.ngrok.app`, and `*.ngrok.io`. Set `ORIGINS` (comma separated) to allow a different set. Keep `ADDR` on loopback; ngrok connects from the same machine.
+The Rust build also needs a native C compiler/linker for build dependencies. On Debian or Ubuntu, install it with `sudo apt-get install build-essential`. Include the rebuilt `ydoc.wasm` with any shim changes. Conformance tests check browser/server compatibility, including UTF-16 offsets and concurrent edits.
 
-Those ngrok defaults are a development convenience: they let a page on any ngrok subdomain open a handshake. **`ORIGINS` is required unless `CANVAS_ENV` is unset or `development`** — the server refuses to start otherwise rather than falling back to the wildcards. In development it uses them and says so in the log.
+## Deployment
 
-## Go server and deep links
-
-The Go module is `github.com/bdswaney/canvas`. `main.go` embeds the Vite build into the server binary and serves the application and its static assets.
-
-The code is split along the seams that already existed, so each package can be read without the rest:
-
-| Package | Holds | Depends on |
-|---|---|---|
-| `main` | startup, `createuser`/`deleteuser`, `ORIGINS`, the `dist` embed | everything |
-| `internal/server` | the route table, the SPA fallback | api, relay, auth |
-| `internal/api` | REST handlers for documents, projects, membership | store, auth |
-| `internal/relay` | the Yjs socket: hub, doc sessions, close codes | store, auth, lib0 |
-| `internal/auth` | session wiring and the `Authenticator` interface | — |
-| `internal/store` | the model, `Store`, and both implementations | — |
-| `internal/migrate` | the migration runner and the SQL files | — |
-| `internal/lib0` | the varint codec the Yjs protocols use | — |
-| `internal/ydoc` | reads and edits Yjs documents, via yrs on WebAssembly | — |
-
-`internal/auth/authtest` holds the stub that stands in for the session package, so tests in every other package can exercise routing without a database. It is the reason `Authenticator` is defined once in `auth` rather than at each consumer.
+Build the production binary:
 
 ```sh
-mise run serve         # watch, rebuild, and serve at http://127.0.0.1:8080
-mise run test          # build frontend and run Go routing tests
-mise run build:server  # produce bin/canvas with frontend embedded
+mise run build:server
 ```
 
-The Go module depends on chi for routing, `coder/websocket` for the relay, and pgx for Postgres.
+The executable is still named `bin/canvas`. It includes the frontend and Wasm module. It needs PostgreSQL at runtime, but not Node, Rust, or a separate `dist/` directory. Rebuild it after frontend changes. `mise run preview` is a frontend preview server, not a deployment command.
 
-Set `ADDR` to override the listening address, for example `ADDR=127.0.0.1:9090 mise run serve`. Bind to `0.0.0.0:8080` only when you intend to expose the server beyond localhost.
+Run the production binary behind an HTTPS reverse proxy that supports WebSockets. Production cookies require HTTPS; do not deploy a binary built with `-tags insecurecookie`.
 
-Opening or refreshing an extensionless route such as `/artifacts/123` serves the React entry point. Missing files, `/assets/*`, and reserved `/api` paths return 404 instead of falling back to HTML. Only GET and HEAD are supported. React currently displays the same shell for every client route; route-specific screens are not implemented yet.
+| Variable | Purpose |
+| --- | --- |
+| `DATABASE_URL` | Required PostgreSQL connection string. PostgreSQL 18+ is required by the session schema. |
+| `COOKIE_KEY` | Base64-encoded key containing at least 32 random bytes. Keep it stable across restarts. If unset, a key is generated and printed at startup, and existing sessions are invalidated on restart. |
+| `ADDR` | Listen address; defaults to `127.0.0.1:8080`. |
+| `CANVAS_ENV` | Set to `production` for deployment. Any nonempty value other than `development` requires explicit `ORIGINS`. |
+| `ORIGINS` | Comma-separated allowed WebSocket origin patterns, such as `nply.example.com`. Unset development configurations allow ngrok wildcard hosts. |
 
-Because `dist/` is embedded at compile time and is not committed, run `mise run deps` and `mise run build` before invoking Go compilation directly on a fresh checkout. The server tasks handle the frontend build automatically. The resulting binary needs neither Node.js nor an external `dist/` directory at runtime. Rebuild it after frontend changes.
+Generate a cookie key once and store it with your deployment secrets:
 
-`mise run serve` runs Air using `.air.toml`. It builds once at startup, then rebuilds the frontend and restarts Go when Go or frontend source files change. Generated files in `dist/`, `.tmp/`, and `bin/` and dependencies in `node_modules/` are excluded to avoid rebuild loops. Build failures stop the old server instead of silently serving stale code. Press Ctrl+C to stop Air and its server.
+```sh
+head -c 32 /dev/urandom | base64
+```
 
-Refresh the browser after an Air rebuild. For frontend hot module replacement without manual refresh, use `mise run dev` instead; Air's Go server serves the embedded build, not the live Vite source. Air is development-only; deploy `bin/canvas` from `mise run build:server`.
+With `DATABASE_URL` and `COOKIE_KEY` set in the environment:
+
+```sh
+CANVAS_ENV=production \
+ORIGINS=nply.example.com \
+ADDR=127.0.0.1:8080 \
+./bin/canvas
+```
+
+Replace the example hostname with your own. Bind beyond loopback only when required by your deployment. The server applies embedded migrations at startup; back up PostgreSQL before upgrades. Saved versions, unsaved edits, and account data all depend on that database.
+
+If a rebuilt binary appears to serve an old frontend, compare its embedded asset name with `dist/assets/`:
+
+```sh
+strings bin/canvas | grep -o 'index-[A-Za-z0-9_-]*\.js' | sort -u
+```
+
+For temporary local sharing, install ngrok and run `mise run tunnel`. It targets port 8080 by default; `PORT` changes the tunnel target, not the server's listen address. Do not use the development wildcard-origin settings in production.
+
+## MCP
+
+### HTTP
+
+Use the web server's `/api/mcp` endpoint with an MCP client that supports Streamable HTTP. This mode shares the browser collaboration relay, so edits reach users who already have the document open.
+
+Create a token for an existing account:
+
+```sh
+mise run token create alice laptop
+```
+
+The secret is printed once; store it securely. Configure your MCP client with:
+
+```text
+URL: https://nply.example.com/api/mcp
+Authorization: Bearer <your-token>
+```
+
+Use `http://127.0.0.1:8080/api/mcp` for a local development server. Tokens act as the named account and use the same project membership checks as browser requests. The server stores only a hash of the secret.
+
+```sh
+mise run token list alice
+mise run token revoke 'replace-with-token-id'
+```
+
+### Stdio
+
+A local MCP client can launch the built binary with `mcp` and an existing username:
+
+```sh
+./bin/canvas mcp alice
+```
+
+Pass `DATABASE_URL` through the client's environment. No access token is needed in this mode; the local process already has database access. For development, the equivalent command is `mise run mcp alice`.
+
+Stdio runs in a separate process with its own relay. Its edits are stored, but do not reach browsers already connected to the web server; those browsers may overwrite them. Prefer HTTP for documents that may be open.
+
+### Tools
+
+| Tool | Action |
+| --- | --- |
+| `list_projects` | List the account's projects. |
+| `list_documents` | List accessible documents, optionally within one project. |
+| `read_document` | Read live text, including unsaved edits, or a specified saved version. |
+| `document_history` | List saved versions and their authors. |
+| `create_document` | Create an empty document in a project. |
+| `edit_document` | Apply a desired full-text value as a collaborative edit. |
+
+MCP edits do not create saved versions. Use Save in the browser to add them to history. `edit_document` preserves the shared prefix and suffix but rewrites everything between them; scattered changes can therefore affect a large span of the document. There are no search, archive, or save tools yet.
+
+## Documents and access
+
+Live edits are journalled to PostgreSQL as Yjs updates. **Save** records a separate version containing the Markdown text and a CRDT snapshot. Closing and reopening a document does not discard edits that have reached the server, even if they have not been saved to version history.
+
+**Restore** replaces the live text with a selected saved version. It leaves existing history intact and does not automatically save a new version. Concurrent typing can merge into the restored text, so coordinate restores with other editors when you need an exact result.
+
+Archiving hides a project or document without deleting its history. Archiving a project also hides its documents. There is no unarchive operation yet.
+
+Project membership controls access to documents and MCP tools. Creating a project makes you a member. There are no owner or administrator roles within a project: any member can manage membership, and the last member cannot leave. Signed-in users can see the account list used by the member picker.
+
+WebSocket authorization is checked when a connection opens. Signing out elsewhere or removing a member does not close their existing sockets; access is checked again when they reconnect.
+
+### Storage and compaction
+
+After a document's last browser disconnects, the relay attempts to compact its active update journal if it has at least 32 entries. Compaction merges those entries into one update and marks the originals as superseded. It does not delete the old rows or trim saved history, so it reduces replay work rather than providing a database retention policy. Saving a version does not compact the journal.
+
+Back up the database, not just saved Markdown: the journal can contain edits that have never been saved to history.
+
+## Source layout
+
+```text
+src/
+  app/          Application shell and routing
+  pages/        Projects, project details, and document workspace
+  editor/       CodeMirror integration and Markdown preview
+  collab/       Yjs provider, presence, and remote pointers
+  api/          HTTP client and session hooks
+  components/   Shared UI components
+
+internal/
+  api/          REST handlers
+  auth/         Sessions and access tokens
+  mcp/          MCP tools
+  relay/        WebSocket relay, update injection, and compaction
+  store/        PostgreSQL and in-memory stores
+  migrate/      Embedded app and session migrations
+  ydoc/         Go/Wasm Yjs engine and compatibility tests
+  lib0/         Yjs wire-format helpers
+  server/       HTTP routes and static asset serving
+```
+
+`main.go` wires the services together; `embed.go` embeds the frontend. Browser routes are `/`, `/project/<id>`, and `/doc/<id>`. The server supports direct links to these routes.
+
+## Open work
+
+The [issue tracker](https://github.com/bdswaney/nPly/issues) covers current work, including [document search](https://github.com/bdswaney/nPly/issues/18), [finer-grained MCP edits](https://github.com/bdswaney/nPly/issues/19), [MCP archiving](https://github.com/bdswaney/nPly/issues/20), [editor/preview modes](https://github.com/bdswaney/nPly/issues/7), [version diffs](https://github.com/bdswaney/nPly/issues/9), and [inline comments](https://github.com/bdswaney/nPly/issues/8).
