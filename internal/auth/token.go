@@ -14,6 +14,7 @@ import (
 	"github.com/cccteam/ccc"
 	"github.com/cccteam/session/sessioninfo"
 	"github.com/jackc/pgx/v5"
+	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 )
 
 // tokenPrefix marks a Canvas token wherever one turns up — in a log, a
@@ -178,36 +179,75 @@ func BearerToken(r *http.Request) string {
 	return strings.TrimSpace(header[7:])
 }
 
+// bearerChallengeWriter preserves the old challenge header while letting the
+// SDK middleware own bearer parsing, verification, and TokenInfo context.
+type bearerChallengeWriter struct{ http.ResponseWriter }
+
+func (w *bearerChallengeWriter) WriteHeader(status int) {
+	if status == http.StatusUnauthorized {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="canvas"`)
+	}
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *bearerChallengeWriter) Flush() {
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *bearerChallengeWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// requireBearerToken is the shared bearer-token middleware seam. Keeping the
+// SDK middleware here matters: the streamable HTTP transport reads TokenInfo
+// from its context when it creates a session and rejects a later request whose
+// user differs from that session.
+func requireBearerToken(verifier mcpauth.TokenVerifier, next http.Handler) http.Handler {
+	sdkMiddleware := mcpauth.RequireBearerToken(verifier, &mcpauth.RequireBearerTokenOptions{
+		// UserByToken performs the authoritative expiry check in SQL. The SDK
+		// still needs to accept a TokenInfo without an artificial expiry.
+		AllowMissingExpiration: true,
+	})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sdkMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			info := mcpauth.TokenInfoFromContext(r.Context())
+			if info == nil || info.UserID == "" {
+				http.Error(w, "invalid account", http.StatusInternalServerError)
+				return
+			}
+			id, err := ccc.UUIDFromString(info.UserID)
+			if err != nil {
+				http.Error(w, "invalid account", http.StatusInternalServerError)
+				return
+			}
+			username, _ := info.Extra["canvas_username"].(string)
+			ctx := context.WithValue(r.Context(), sessioninfo.CtxUserInfo, &sessioninfo.UserInfo{
+				ID:       id,
+				Username: username,
+			})
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})).ServeHTTP(&bearerChallengeWriter{ResponseWriter: w}, r)
+	})
+}
+
 // RequireToken authenticates by bearer token and puts the account in the
 // context, in the same shape session validation uses — so everything
 // downstream, including the membership checks, cannot tell the two apart.
+// It also supplies the SDK's TokenInfo context, which binds stateful MCP
+// sessions to the account that created them.
 //
 // There is deliberately no XSRF check here. XSRF defends against a browser
 // attaching a credential automatically; a token is only ever sent by a client
 // that was told to send it, so there is nothing ambient to forge.
 func (a *PasswordAuth) RequireToken(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		secret := BearerToken(r)
-		if secret == "" {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="canvas"`)
-			http.Error(w, "a bearer token is required", http.StatusUnauthorized)
-			return
-		}
-		user, err := a.UserByToken(r.Context(), secret)
+	return requireBearerToken(func(ctx context.Context, secret string, _ *http.Request) (*mcpauth.TokenInfo, error) {
+		user, err := a.UserByToken(ctx, secret)
 		if err != nil {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="canvas"`)
-			http.Error(w, "invalid token", http.StatusUnauthorized)
-			return
+			return nil, fmt.Errorf("%w: %v", mcpauth.ErrInvalidToken, err)
 		}
-		id, err := ccc.UUIDFromString(user.ID)
-		if err != nil {
-			http.Error(w, "invalid account", http.StatusInternalServerError)
-			return
-		}
-		ctx := context.WithValue(r.Context(), sessioninfo.CtxUserInfo, &sessioninfo.UserInfo{
-			ID:       id,
-			Username: user.Username,
-		})
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
+		return &mcpauth.TokenInfo{
+			UserID: user.ID,
+			Extra:  map[string]any{"canvas_username": user.Username},
+		}, nil
+	}, next)
 }
