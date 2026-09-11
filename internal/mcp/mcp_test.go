@@ -59,12 +59,18 @@ func session(t *testing.T, user string) (*mcp.ClientSession, store.Store, *ydoc.
 	return cs, st, engine, relay
 }
 
-func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (string, bool) {
+func callResult(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
 	t.Helper()
 	res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("call %s: %v", name, err)
 	}
+	return res
+}
+
+func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (string, bool) {
+	t.Helper()
+	res := callResult(t, cs, name, args)
 	var b strings.Builder
 	for _, content := range res.Content {
 		if tc, ok := content.(*mcp.TextContent); ok {
@@ -81,8 +87,9 @@ func TestToolsAreAdvertised(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"list_projects": false, "list_documents": false, "read_document": false,
-		"document_history": false, "create_document": false, "edit_document": false,
+		"list_projects": false, "create_project": false, "list_documents": false,
+		"read_document": false, "document_history": false, "create_document": false,
+		"edit_document": false, "save_document": false, "upsert_document": false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -90,6 +97,9 @@ func TestToolsAreAdvertised(t *testing.T) {
 		}
 		if tool.Description == "" {
 			t.Errorf("%s has no description; an assistant chooses tools by them", tool.Name)
+		}
+		if want[tool.Name] && tool.OutputSchema == nil {
+			t.Errorf("%s has no structured output schema", tool.Name)
 		}
 	}
 	for name, found := range want {
@@ -128,6 +138,125 @@ func TestCreateReadAndEdit(t *testing.T) {
 	if isErr || body != "# Notes\n\nFirst line.\n" {
 		t.Fatalf("read back = %q, isErr=%v", body, isErr)
 	}
+}
+
+func TestProjectBootstrapStructuredResultsAndIdempotentImport(t *testing.T) {
+	cs, st, _, _ := session(t, owner)
+
+	projectResult := callResult(t, cs, "create_project", map[string]any{"name": "Imports"})
+	if projectResult.IsError || projectResult.StructuredContent == nil {
+		t.Fatalf("create_project result = %+v, want structured success", projectResult)
+	}
+	var projectID string
+	for _, project := range mustProjects(t, st, owner) {
+		if project.Name == "Imports" {
+			projectID = project.ID
+		}
+	}
+	if projectID == "" {
+		t.Fatal("created project was not visible to its creator")
+	}
+
+	if result := callResult(t, cs, "upsert_document", map[string]any{"projectId": projectID, "name": "Missing key", "text": "x"}); !result.IsError {
+		t.Fatal("upsert without sourceKey succeeded")
+	}
+
+	emptyCreated, isErr := call(t, cs, "create_document", map[string]any{"projectId": projectID, "name": "Empty"})
+	if isErr {
+		t.Fatalf("create empty document: %s", emptyCreated)
+	}
+	emptyID := strings.Fields(strings.TrimPrefix(emptyCreated, "Created "))[0]
+	if result := callResult(t, cs, "save_document", map[string]any{"documentId": emptyID}); result.IsError || result.StructuredContent == nil {
+		t.Fatalf("save empty document = %+v, want structured success", result)
+	}
+	if body, isErr := call(t, cs, "read_document", map[string]any{"documentId": emptyID, "version": 1}); isErr || body != "" {
+		t.Fatalf("saved empty document = %q, isErr=%v", body, isErr)
+	}
+
+	first := callResult(t, cs, "upsert_document", map[string]any{
+		"projectId": projectID,
+		"sourceKey": "github:issue:40",
+		"name":      "MCP workflow",
+		"text":      "first import",
+		"save":      true,
+	})
+	if first.IsError || first.StructuredContent == nil {
+		t.Fatalf("first upsert = %+v, want structured success", first)
+	}
+	retry := callResult(t, cs, "upsert_document", map[string]any{
+		"projectId": projectID,
+		"sourceKey": "github:issue:40",
+		"name":      "MCP workflow",
+		"text":      "first import",
+		"save":      true,
+	})
+	if retry.IsError || retry.StructuredContent == nil {
+		t.Fatalf("identical saved upsert retry = %+v, want structured success", retry)
+	}
+	versions, err := st.Versions(t.Context(), importedID(t, st, projectID, owner, "github:issue:40"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions) != 1 || versions[0].Version != 1 {
+		t.Fatalf("identical saved retry created versions = %+v, want one version", versions)
+	}
+
+	second := callResult(t, cs, "upsert_document", map[string]any{
+		"projectId": projectID,
+		"sourceKey": "github:issue:40",
+		"name":      "MCP workflow updated",
+		"text":      "second import",
+		"save":      true,
+	})
+	if second.IsError || second.StructuredContent == nil {
+		t.Fatalf("changed upsert = %+v, want structured success", second)
+	}
+
+	docs, err := st.Docs(t.Context(), projectID, owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported store.Doc
+	var found int
+	for _, doc := range docs {
+		if doc.SourceKey == "github:issue:40" {
+			imported = doc
+			found++
+		}
+	}
+	if found != 1 || imported.Name != "MCP workflow updated" {
+		t.Fatalf("source-key docs = %+v, found %d; want one renamed document", docs, found)
+	}
+	if body, isErr := call(t, cs, "read_document", map[string]any{"documentId": imported.ID}); isErr || body != "second import" {
+		t.Fatalf("repeated upsert live text = %q, isErr=%v", body, isErr)
+	}
+	if body, isErr := call(t, cs, "read_document", map[string]any{"documentId": imported.ID, "version": 1}); isErr || body != "first import" {
+		t.Fatalf("saved first import = %q, isErr=%v", body, isErr)
+	}
+}
+
+func mustProjects(t *testing.T, st store.Store, userID string) []store.Project {
+	t.Helper()
+	projects, err := st.Projects(t.Context(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return projects
+}
+
+func importedID(t *testing.T, st store.Store, projectID, userID, sourceKey string) string {
+	t.Helper()
+	docs, err := st.Docs(t.Context(), projectID, userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, doc := range docs {
+		if doc.SourceKey == sourceKey {
+			return doc.ID
+		}
+	}
+	t.Fatalf("source key %q not found", sourceKey)
+	return ""
 }
 
 // The edit has to merge rather than overwrite: that is the whole reason it
@@ -206,6 +335,8 @@ func TestOutsiderSeesAndReachesNothing(t *testing.T) {
 		{"read_document", map[string]any{"documentId": docID}},
 		{"document_history", map[string]any{"documentId": docID}},
 		{"edit_document", map[string]any{"documentId": docID, "text": "mine now"}},
+		{"save_document", map[string]any{"documentId": docID}},
+		{"upsert_document", map[string]any{"projectId": store.DefaultProjectID, "sourceKey": "github:issue:private", "name": "Sneak", "text": "mine now"}},
 		{"create_document", map[string]any{"projectId": store.DefaultProjectID, "name": "Sneak"}},
 	} {
 		body, isErr := call(t, cs, tool.name, tool.args)
