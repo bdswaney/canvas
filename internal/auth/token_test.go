@@ -16,6 +16,8 @@ import (
 	mcpauth "github.com/modelcontextprotocol/go-sdk/auth"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
+
+	"github.com/bdswaney/canvas/internal/migrate"
 )
 
 // Tokens are a credential, so these run against the real database rather than
@@ -26,6 +28,12 @@ func tokenFixture(t *testing.T) (*PasswordAuth, string) {
 	url := os.Getenv("DATABASE_URL")
 	if url == "" {
 		t.Skip("DATABASE_URL is not set")
+	}
+	// Migrate here rather than rely on another package's tests having done it:
+	// go test runs packages in parallel, so on a fresh database this package
+	// can start before anything has created the schema.
+	if err := migrate.Run(url); err != nil {
+		t.Fatal(err)
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, url)
