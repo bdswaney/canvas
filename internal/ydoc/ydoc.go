@@ -239,10 +239,18 @@ func clientID() (uint32, error) {
 // SetText edits a named Y.Text until it reads as next, and returns only the
 // update that change produced — what the caller journals and broadcasts.
 //
-// This is an edit, not a replacement: the shared prefix and suffix are left
-// alone, so a peer editing elsewhere in the document keeps their work. Passing
-// the whole document is how a caller that thinks in text rather than in CRDT
+// This is an edit, not a replacement: the current text is diffed against next
+// (by line, then by character within changed lines) and each hunk is applied
+// as its own delete or insert. Two small changes far apart are two small
+// operations, the text between them keeps its Yjs items, and a peer typing
+// anywhere the diff leaves unchanged keeps their work. Passing the whole
+// document is how a caller that thinks in text rather than in CRDT
 // operations, such as an MCP client, expresses a change.
+//
+// The diff is against the current state, so SetText cannot tell a change the
+// caller meant from a change somebody made after the caller last read: both
+// look like differences to undo. A caller working from an earlier read has to
+// check for that first; see edit_document in internal/mcp.
 func (e *Engine) SetText(ctx context.Context, state []byte, name, next string) ([]byte, error) {
 	id, err := clientID()
 	if err != nil {

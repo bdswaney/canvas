@@ -8,6 +8,9 @@ publish = false
 # flat WASM interface in src/lib.rs; nothing here is called from Rust.
 [dependencies]
 yrs = "0.18"
+# Myers diff for canvas_set_text. Only the slice algorithms are used, so the
+# text helpers stay out.
+similar = { version = "3.2", default-features = false, features = ["std"] }
 
 [lib]
 crate-type = ["cdylib"]
