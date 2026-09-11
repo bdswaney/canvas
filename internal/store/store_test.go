@@ -82,13 +82,25 @@ func storeConformance(t *testing.T, store Store, projectID, elsewhereID, userID,
 		t.Errorf("doc project = %q, want %q", notes.ProjectID, projectID)
 	}
 
+	imported, created, err := store.UpsertDoc(ctx, projectID, "github:42", "Issue 42")
+	if err != nil || !created {
+		t.Fatalf("first source-key import = %+v, created=%v, err=%v", imported, created, err)
+	}
+	repeated, created, err := store.UpsertDoc(ctx, projectID, "github:42", "Issue 42 renamed")
+	if err != nil || created || repeated.ID != imported.ID || repeated.Name != "Issue 42 renamed" {
+		t.Fatalf("repeated source-key import = %+v, created=%v, err=%v", repeated, created, err)
+	}
+	if _, _, err := store.UpsertDoc(ctx, projectID, "", "missing key"); err == nil {
+		t.Error("source-key import without a key succeeded")
+	}
+
 	// Listing by project must return this project's docs, and no others.
 	docs, err := store.Docs(ctx, projectID, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names := docNames(docs); names != "Agenda,Notes" {
-		t.Errorf("docs in project = %q, want \"Agenda,Notes\"", names)
+	if names := docNames(docs); names != "Agenda,Issue 42 renamed,Notes" {
+		t.Errorf("docs in project = %q, want \"Agenda,Issue 42 renamed,Notes\"", names)
 	}
 	// An empty project id means every project, which is a different code path
 	// in both stores: a skipped filter in memory, a NULL comparison in SQL.

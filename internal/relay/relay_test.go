@@ -24,6 +24,22 @@ type testRelay struct {
 	ids   map[string]string
 }
 
+type blockingAppendStore struct {
+	store.Store
+	appendStarted chan struct{}
+	allowAppend   chan struct{}
+}
+
+func (s *blockingAppendStore) Append(ctx context.Context, docID string, update []byte) error {
+	close(s.appendStarted)
+	select {
+	case <-s.allowAppend:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.Store.Append(ctx, docID, update)
+}
+
 func newTestRelay(t *testing.T, st store.Store) *testRelay {
 	t.Helper()
 	return newTestRelayWithAuth(t, st, authtest.Stub{Valid: true})
@@ -125,6 +141,64 @@ func TestHandshakeInEmptyRoom(t *testing.T) {
 	write(t, conn, syncFrame(syncStep1, emptyStateVector))
 	if payload := expectSync(t, conn, syncStep2); !bytes.Equal(payload, emptyUpdate) {
 		t.Errorf("step 2 payload = % x, want % x", payload, emptyUpdate)
+	}
+}
+
+func TestInjectSerializesSessionCreationWithJournalAppend(t *testing.T) {
+	base := newTestStore(t)
+	doc, err := base.CreateDoc(context.Background(), store.DefaultProjectID, "inject race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &blockingAppendStore{
+		Store:         base,
+		appendStarted: make(chan struct{}),
+		allowAppend:   make(chan struct{}),
+	}
+	hub := NewHub(st, nil)
+	appendAllowed := false
+	defer func() {
+		if !appendAllowed {
+			close(st.allowAppend)
+		}
+	}()
+	update := []byte{0x01, 0x02, 0x03}
+	injectDone := make(chan error, 1)
+	go func() { injectDone <- hub.Inject(context.Background(), doc.ID, update) }()
+	<-st.appendStarted
+
+	joinStarted := make(chan struct{})
+	historyDone := make(chan struct {
+		updates [][]byte
+		err     error
+	}, 1)
+	go func() {
+		close(joinStarted)
+		r := hub.join(doc.ID, &client{send: make(chan []byte, 1)})
+		updates, err := hub.history(context.Background(), r)
+		historyDone <- struct {
+			updates [][]byte
+			err     error
+		}{updates, err}
+	}()
+	<-joinStarted
+	select {
+	case result := <-historyDone:
+		t.Fatalf("session loaded history before Inject appended: updates=%v err=%v", result.updates, result.err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(st.allowAppend)
+	appendAllowed = true
+	if err := <-injectDone; err != nil {
+		t.Fatal(err)
+	}
+	result := <-historyDone
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if len(result.updates) != 1 || !bytes.Equal(result.updates[0], update) {
+		t.Fatalf("session history = %x, want %x", result.updates, update)
 	}
 }
 
