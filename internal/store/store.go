@@ -18,6 +18,7 @@ type Doc struct {
 	ID             string    `json:"id"`
 	ProjectID      string    `json:"projectId"`
 	Name           string    `json:"name"`
+	SourceKey      string    `json:"-"`
 	CurrentVersion int       `json:"currentVersion"`
 	UpdatedAt      time.Time `json:"updatedAt"`
 	// SavedSHA256 is the hash of the artifact stored by the last save, so a
@@ -118,6 +119,11 @@ type Store interface {
 	Docs(ctx context.Context, projectID, userID string) ([]Doc, error)
 	Doc(ctx context.Context, docID string) (Doc, error)
 	CreateDoc(ctx context.Context, projectID, name string) (Doc, error)
+	// UpsertDoc uses sourceKey as a stable external identity. It creates a
+	// document when the key is new and updates its display name when it exists.
+	// An empty sourceKey is rejected: callers that need an ordinary document
+	// should use CreateDoc so imports cannot silently duplicate.
+	UpsertDoc(ctx context.Context, projectID, sourceKey, name string) (doc Doc, created bool, err error)
 
 	SaveDoc(ctx context.Context, docID string, save Save) (int, error)
 	Versions(ctx context.Context, docID string) ([]Version, error)

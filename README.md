@@ -175,14 +175,17 @@ Stdio runs in a separate process with its own relay. Its edits are stored, but d
 
 | Tool | Action |
 | --- | --- |
-| `list_projects` | List the account's projects. |
-| `list_documents` | List accessible documents, optionally within one project. |
+| `list_projects` | List the account's projects, with structured project metadata. |
+| `create_project` | Create a project and become its first member. |
+| `list_documents` | List accessible documents, optionally within one project, with structured metadata. |
 | `read_document` | Read live text, including unsaved edits, or a specified saved version. |
 | `document_history` | List saved versions and their authors. |
 | `create_document` | Create an empty document in a project. |
-| `edit_document` | Apply a desired full-text value as a collaborative edit. |
+| `edit_document` | Apply a desired full-text value as a collaborative live edit without creating history. |
+| `save_document` | Save the current live text as a new history version. |
+| `upsert_document` | Create or update an imported document by stable `sourceKey`; optionally save it in one call. |
 
-MCP edits do not create saved versions. Use Save in the browser to add them to history. `edit_document` preserves the shared prefix and suffix but rewrites everything between them; scattered changes can therefore affect a large span of the document. There are no search, archive, or save tools yet.
+MCP `edit_document` calls update live text but do not create saved versions. Use `save_document` or Save in the browser to add the current text to history. `upsert_document` is intended for repeatable imports: its `sourceKey` is stable within a project, so repeating the call updates the existing document instead of creating a duplicate. It preserves the shared prefix and suffix but rewrites everything between them; scattered changes can therefore affect a large span of the document. There are no search or archive tools yet.
 
 ## Documents and access
 

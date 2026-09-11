@@ -133,13 +133,17 @@ func (s *PostgresStore) Supersede(ctx context.Context, docID string, ids []int64
 	return nil
 }
 
-const docColumns = `d.id, d.project_id, d.name, d.current_version, d.updated_at, s.artifact_sha256`
+const docColumns = `d.id, d.project_id, d.name, d.source_key, d.current_version, d.updated_at, s.artifact_sha256`
 
 func scanDoc(row pgx.Row) (Doc, error) {
 	var doc Doc
+	var sourceKey *string
 	var saved []byte
-	if err := row.Scan(&doc.ID, &doc.ProjectID, &doc.Name, &doc.CurrentVersion, &doc.UpdatedAt, &saved); err != nil {
+	if err := row.Scan(&doc.ID, &doc.ProjectID, &doc.Name, &sourceKey, &doc.CurrentVersion, &doc.UpdatedAt, &saved); err != nil {
 		return Doc{}, err
+	}
+	if sourceKey != nil {
+		doc.SourceKey = *sourceKey
 	}
 	doc.SavedSHA256 = saved
 	return doc, nil
@@ -312,6 +316,25 @@ func (s *PostgresStore) CreateDoc(ctx context.Context, projectID, name string) (
 		return Doc{}, fmt.Errorf("create doc: %w", err)
 	}
 	return s.Doc(ctx, id)
+}
+
+func (s *PostgresStore) UpsertDoc(ctx context.Context, projectID, sourceKey, name string) (Doc, bool, error) {
+	if sourceKey == "" {
+		return Doc{}, false, fmt.Errorf("source key is required")
+	}
+	var id string
+	var created bool
+	if err := s.pool.QueryRow(ctx, `
+		INSERT INTO docs (project_id, source_key, name)
+		VALUES ($1::uuid, $2, $3)
+		ON CONFLICT (project_id, source_key)
+		WHERE source_key IS NOT NULL AND deleted_at IS NULL
+		DO UPDATE SET name = EXCLUDED.name, updated_at = now()
+		RETURNING id, (xmax = 0)`, projectID, sourceKey, name).Scan(&id, &created); err != nil {
+		return Doc{}, false, fmt.Errorf("upsert doc: %w", err)
+	}
+	doc, err := s.Doc(ctx, id)
+	return doc, created, err
 }
 
 // SaveDoc commits one version. The version number is assigned here, under a
