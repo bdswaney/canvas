@@ -100,6 +100,20 @@ fn name_of(ptr: u32, len: u32) -> Result<String, String> {
     String::from_utf8(slice(ptr, len).to_vec()).map_err(|e| format!("text name: {e}"))
 }
 
+fn editing_document(state: &[u8], client_id: u32) -> Result<Doc, String> {
+    let doc = Doc::with_options(Options {
+        client_id: client_id as u64,
+        offset_kind: OffsetKind::Utf16,
+        ..Default::default()
+    });
+    if !state.is_empty() {
+        let update = Update::decode_v1(state).map_err(|e| format!("decode state: {e}"))?;
+        let mut txn = doc.transact_mut();
+        txn.apply_update(update);
+    }
+    Ok(doc)
+}
+
 /// canvas_merge_updates collapses a sequence of updates into one.
 ///
 /// The input is each update prefixed by its length as a little-endian u32,
@@ -174,6 +188,7 @@ pub extern "C" fn canvas_set_text(
     name_len: u32,
     next_ptr: u32,
     next_len: u32,
+    client_id: u32,
 ) -> u64 {
     let name = match name_of(name_ptr, name_len) {
         Ok(name) => name,
@@ -183,7 +198,7 @@ pub extern "C" fn canvas_set_text(
         Ok(next) => next,
         Err(e) => return err(&format!("replacement text: {e}")),
     };
-    let doc = match document(slice(state_ptr, state_len)) {
+    let doc = match editing_document(slice(state_ptr, state_len), client_id) {
         Ok(doc) => doc,
         Err(e) => return err(&e),
     };

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -146,6 +147,68 @@ func TestOffsetsAgreeAcrossSurrogatePairs(t *testing.T) {
 	}
 	if edited.Text != "👍aXb" {
 		t.Fatalf("yjs itself produced %q, want %q", edited.Text, "👍aXb")
+	}
+}
+
+// Each SetText call runs in a fresh Wasm instance. It must still get a
+// distinct Yjs client ID, or two edits based on the same state can share an
+// (client, clock) pair and one update is silently discarded.
+func TestConcurrentServerEditsUseDistinctClientIDs(t *testing.T) {
+	e := engine(t)
+
+	base, err := e.SetText(t.Context(), nil, "notes", "base")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Identical edits make the client-ID distinction observable in the update
+	// bytes themselves: with the old implicit ID, fresh Wasm instances emitted
+	// the same update for both calls.
+	identicalA, err := e.SetText(t.Context(), base, "notes", "base X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identicalB, err := e.SetText(t.Context(), base, "notes", "base X")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(identicalA, identicalB) {
+		t.Fatal("same-base edits unexpectedly have identical update bytes")
+	}
+
+	left, err := e.SetText(t.Context(), base, "notes", "base left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := e.SetText(t.Context(), base, "notes", "base right")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, updates := range [][][]byte{
+		{base, left, right},
+		{base, right, left},
+	} {
+		merged, err := e.Merge(t.Context(), updates)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serverText, err := e.Text(t.Context(), merged, "notes")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(serverText, "left") || !strings.Contains(serverText, "right") {
+			t.Fatalf("independent edits were lost in merge: %q", serverText)
+		}
+
+		browserUpdates := make([]string, 0, len(updates))
+		for _, update := range updates {
+			browserUpdates = append(browserUpdates, b64(update))
+		}
+		browser := yjs(t, map[string]any{"op": "merge", "updates": browserUpdates})
+		if browser.Text != serverText {
+			t.Fatalf("browser and server disagree for merge order:\n  server: %q\n  browser: %q", serverText, browser.Text)
+		}
 	}
 }
 
