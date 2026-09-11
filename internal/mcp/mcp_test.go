@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -23,10 +24,12 @@ const (
 type injector struct {
 	store    store.Store
 	injected int
+	last     []byte
 }
 
 func (i *injector) Inject(ctx context.Context, docID string, update []byte) error {
 	i.injected++
+	i.last = update
 	return i.store.Append(ctx, docID, update)
 }
 
@@ -45,6 +48,12 @@ func session(t *testing.T, user string) (*mcp.ClientSession, store.Store, *ydoc.
 		t.Fatal(err)
 	}
 	relay := &injector{store: st}
+	return connect(t, st, engine, relay, user), st, engine, relay
+}
+
+// connect serves one account over an existing store.
+func connect(t *testing.T, st store.Store, engine *ydoc.Engine, relay Broadcaster, user string) *mcp.ClientSession {
+	t.Helper()
 	server := New(st, engine, relay, auth.User{ID: user, Username: "tester"})
 
 	clientTransport, serverTransport := mcp.NewInMemoryTransports()
@@ -56,7 +65,7 @@ func session(t *testing.T, user string) (*mcp.ClientSession, store.Store, *ydoc.
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cs.Close() })
-	return cs, st, engine, relay
+	return cs
 }
 
 func callResult(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {
@@ -68,16 +77,88 @@ func callResult(t *testing.T, cs *mcp.ClientSession, name string, args map[strin
 	return res
 }
 
+func texts(res *mcp.CallToolResult) []string {
+	var out []string
+	for _, content := range res.Content {
+		if tc, ok := content.(*mcp.TextContent); ok {
+			out = append(out, tc.Text)
+		}
+	}
+	return out
+}
+
+// call returns a tool's first text block. read_document puts the document in a
+// block of its own, exactly as it reads, and its baseVersion in the next.
 func call(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) (string, bool) {
 	t.Helper()
 	res := callResult(t, cs, name, args)
-	var b strings.Builder
-	for _, content := range res.Content {
-		if tc, ok := content.(*mcp.TextContent); ok {
-			b.WriteString(tc.Text)
-		}
+	blocks := texts(res)
+	if len(blocks) == 0 {
+		return "", res.IsError
 	}
-	return b.String(), res.IsError
+	return blocks[0], res.IsError
+}
+
+func structured(t *testing.T, res *mcp.CallToolResult) map[string]any {
+	t.Helper()
+	fields, ok := res.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("no structured content in %+v", res)
+	}
+	return fields
+}
+
+// baseVersion pulls the version token out of a result's structured content.
+func baseVersion(t *testing.T, res *mcp.CallToolResult) string {
+	t.Helper()
+	version, _ := structured(t, res)["baseVersion"].(string)
+	if version == "" {
+		t.Fatalf("no baseVersion in %#v", res.StructuredContent)
+	}
+	return version
+}
+
+func create(t *testing.T, cs *mcp.ClientSession, name string) string {
+	t.Helper()
+	created, isErr := call(t, cs, "create_document", map[string]any{
+		"projectId": store.DefaultProjectID, "name": name,
+	})
+	if isErr {
+		t.Fatalf("create: %s", created)
+	}
+	return strings.Fields(strings.TrimPrefix(created, "Created "))[0]
+}
+
+// humanEdit journals a change the way somebody typing in the editor would.
+func humanEdit(t *testing.T, st store.Store, engine *ydoc.Engine, docID, next string) {
+	t.Helper()
+	updates, err := st.Load(t.Context(), docID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := engine.Merge(t.Context(), updates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update, err := engine.SetText(t.Context(), state, textField, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Append(t.Context(), docID, update); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// plan is about the size of the document that exposed the problem: a command
+// named near the top and again near the bottom, with kilobytes between.
+func plan() string {
+	var b strings.Builder
+	b.WriteString("# SSO plan\n\nStart with `canvas-old login`. Café, naïve, 👍 — not only ASCII.\n\n")
+	for i := range 100 {
+		fmt.Fprintf(&b, "Step %d: configure one more part of the rollout, and check it before moving on 🎉.\n", i)
+	}
+	b.WriteString("\nWhen it is done, run `canvas-old login` again to confirm.\n")
+	return b.String()
 }
 
 func TestToolsAreAdvertised(t *testing.T) {
@@ -90,6 +171,7 @@ func TestToolsAreAdvertised(t *testing.T) {
 		"list_projects": false, "create_project": false, "list_documents": false,
 		"read_document": false, "document_history": false, "create_document": false,
 		"edit_document": false, "save_document": false, "upsert_document": false,
+		"archive_document": false,
 	}
 	for _, tool := range tools.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -100,6 +182,12 @@ func TestToolsAreAdvertised(t *testing.T) {
 		}
 		if want[tool.Name] && tool.OutputSchema == nil {
 			t.Errorf("%s has no structured output schema", tool.Name)
+		}
+		// A client uses the hint to ask before running it.
+		if tool.Name == "archive_document" {
+			if tool.Annotations == nil || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint {
+				t.Errorf("archive_document is not marked destructive: %+v", tool.Annotations)
+			}
 		}
 	}
 	for name, found := range want {
@@ -297,6 +385,182 @@ func TestEditPreservesAConcurrentChange(t *testing.T) {
 	}
 }
 
+// Two small changes far apart are two small operations. Trimming only the
+// shared prefix and suffix deleted and inserted the span between them again:
+// 8,741 bytes in the journal for a few dozen changed characters.
+func TestTwoDistantEditsWriteASmallUpdate(t *testing.T) {
+	cs, _, _, relay := session(t, owner)
+	docID := create(t, cs, "Plan")
+
+	body := plan()
+	if out, isErr := call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": body}); isErr {
+		t.Fatalf("edit: %s", out)
+	}
+	whole := len(relay.last)
+
+	next := strings.ReplaceAll(body, "canvas-old", "canvas-new")
+	if out, isErr := call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": next}); isErr {
+		t.Fatalf("edit: %s", out)
+	}
+	small := len(relay.last)
+	t.Logf("document %d bytes: writing it journalled %d bytes, two distant edits %d", len(body), whole, small)
+
+	if small > 300 {
+		t.Errorf("two small edits journalled %d bytes (the whole document was %d); "+
+			"the text between them was rewritten", small, whole)
+	}
+	if got, _ := call(t, cs, "read_document", map[string]any{"documentId": docID}); got != next {
+		t.Fatalf("read back differs from the requested text")
+	}
+}
+
+// The stale read: the assistant reads, a person edits the middle, and the
+// assistant sends text based on what it read. With baseVersion that edit is
+// refused, so the person's work survives, and the refusal carries what the
+// assistant needs to try again.
+func TestStaleEditIsRefused(t *testing.T) {
+	cs, st, engine, relay := session(t, owner)
+	docID := create(t, cs, "Plan")
+	body := plan()
+	call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": body})
+
+	read := callResult(t, cs, "read_document", map[string]any{"documentId": docID})
+	if blocks := texts(read); len(blocks) < 2 || blocks[0] != body || !strings.Contains(blocks[1], baseVersion(t, read)) {
+		t.Fatal("read_document must return the document exactly, then its baseVersion in text")
+	}
+	readVersion := baseVersion(t, read)
+
+	const person = " (a person wrote this)"
+	withPerson := strings.Replace(body, "Step 50:", "Step 50:"+person, 1)
+	humanEdit(t, st, engine, docID, withPerson)
+	injected := relay.injected
+
+	stale := callResult(t, cs, "edit_document", map[string]any{
+		"documentId":  docID,
+		"text":        strings.Replace(body, "canvas-old", "canvas-new", 1),
+		"baseVersion": readVersion,
+	})
+	if !stale.IsError {
+		t.Fatalf("an edit based on a stale read was accepted: %v", texts(stale))
+	}
+	if relay.injected != injected {
+		t.Fatal("the refused edit was written anyway")
+	}
+	if got, _ := call(t, cs, "read_document", map[string]any{"documentId": docID}); got != withPerson {
+		t.Fatalf("the person's edit did not survive: %q", got)
+	}
+	if blocks := texts(stale); len(blocks) < 2 || blocks[1] != withPerson {
+		t.Fatalf("the refusal does not carry the current text: %q", blocks)
+	}
+	if conflict, _ := structured(t, stale)["conflict"].(bool); !conflict {
+		t.Errorf("the refusal is not marked as a conflict: %#v", stale.StructuredContent)
+	}
+	fresh := baseVersion(t, stale)
+	if fresh == readVersion {
+		t.Fatal("the refusal handed back the stale version")
+	}
+
+	// Redone against the current text, it goes through and both survive.
+	redone := callResult(t, cs, "edit_document", map[string]any{
+		"documentId":  docID,
+		"text":        strings.Replace(withPerson, "canvas-old", "canvas-new", 1),
+		"baseVersion": fresh,
+	})
+	if redone.IsError {
+		t.Fatalf("the redone edit was refused: %v", texts(redone))
+	}
+	got, _ := call(t, cs, "read_document", map[string]any{"documentId": docID})
+	if !strings.Contains(got, person) || !strings.Contains(got, "canvas-new") {
+		t.Fatalf("an edit was lost: %q", got)
+	}
+
+	// The version an edit returns chains into the next one without a re-read.
+	chained := callResult(t, cs, "edit_document", map[string]any{
+		"documentId":  docID,
+		"text":        got + "\nOne more line.\n",
+		"baseVersion": baseVersion(t, redone),
+	})
+	if chained.IsError {
+		t.Fatalf("an edit based on the previous edit's version was refused: %v", texts(chained))
+	}
+}
+
+// Without baseVersion the text is applied to the document as it is now,
+// including reverting a change the caller never saw. The tool description
+// says so; this pins that omitting it still works.
+func TestEditWithoutBaseVersionAppliesToTheCurrentText(t *testing.T) {
+	cs, st, engine, _ := session(t, owner)
+	docID := create(t, cs, "Plan")
+	call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": "one\ntwo\nthree\n"})
+	humanEdit(t, st, engine, docID, "one\ntwo and a half\nthree\n")
+
+	if out, isErr := call(t, cs, "edit_document", map[string]any{
+		"documentId": docID, "text": "ONE\ntwo\nthree\n",
+	}); isErr {
+		t.Fatalf("edit without baseVersion: %s", out)
+	}
+	if got, _ := call(t, cs, "read_document", map[string]any{"documentId": docID}); got != "ONE\ntwo\nthree\n" {
+		t.Fatalf("read back = %q", got)
+	}
+}
+
+// Archiving hides a document and keeps its history, the same as the web app.
+// Once archived it is out of reach like a missing document, including for a
+// second archive.
+func TestArchiveHidesTheDocumentAndKeepsHistory(t *testing.T) {
+	cs, st, _, _ := session(t, owner)
+	docID := create(t, cs, "Mistake")
+	call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": "kept"})
+	if saved := callResult(t, cs, "save_document", map[string]any{"documentId": docID}); saved.IsError {
+		t.Fatalf("save: %v", texts(saved))
+	}
+
+	archived := callResult(t, cs, "archive_document", map[string]any{"documentId": docID})
+	if archived.IsError {
+		t.Fatalf("archive: %v", texts(archived))
+	}
+	if ok, _ := structured(t, archived)["archived"].(bool); !ok {
+		t.Errorf("archive result is not marked archived: %#v", archived.StructuredContent)
+	}
+
+	if body, _ := call(t, cs, "list_documents", map[string]any{}); strings.Contains(body, docID) {
+		t.Errorf("an archived document is still listed: %q", body)
+	}
+	for _, tool := range []string{"read_document", "document_history", "archive_document"} {
+		body, isErr := call(t, cs, tool, map[string]any{"documentId": docID})
+		if !isErr || body != "no document "+docID {
+			t.Errorf("%s on an archived document = %q, isErr=%v; want %q", tool, body, isErr, "no document "+docID)
+		}
+	}
+	if artifact, err := st.Artifact(t.Context(), docID, 1); err != nil || artifact != "kept" {
+		t.Errorf("saved version after archive = %q, %v; history must be kept", artifact, err)
+	}
+}
+
+// A non-member archiving somebody else's document is told the same thing as
+// somebody naming an id that does not exist, and the document stays.
+func TestOutsiderCannotArchive(t *testing.T) {
+	ownerSession, st, engine, _ := session(t, owner)
+	docID := create(t, ownerSession, "Private")
+	cs := connect(t, st, engine, &injector{store: st}, outsider)
+
+	body, isErr := call(t, cs, "archive_document", map[string]any{"documentId": docID})
+	if !isErr || body != "no document "+docID {
+		t.Errorf("outsider archiving = %q, isErr=%v; want %q", body, isErr, "no document "+docID)
+	}
+	const missing = "00000000-0000-4000-8000-000000000404"
+	if body, isErr := call(t, ownerSession, "archive_document", map[string]any{"documentId": missing}); !isErr || body != "no document "+missing {
+		t.Errorf("archiving an unknown id = %q, isErr=%v", body, isErr)
+	}
+
+	if listed, _ := call(t, ownerSession, "list_documents", map[string]any{}); !strings.Contains(listed, docID) {
+		t.Fatalf("the outsider archived the document: %q", listed)
+	}
+	if _, err := st.Doc(t.Context(), docID); err != nil {
+		t.Fatalf("the document is gone from the store: %v", err)
+	}
+}
+
 // Membership is the boundary, and it has to hold here too. Anything out of
 // reach is reported as missing rather than forbidden, so ids cannot be probed.
 func TestOutsiderSeesAndReachesNothing(t *testing.T) {
@@ -337,6 +601,7 @@ func TestOutsiderSeesAndReachesNothing(t *testing.T) {
 		{"edit_document", map[string]any{"documentId": docID, "text": "mine now"}},
 		{"save_document", map[string]any{"documentId": docID}},
 		{"upsert_document", map[string]any{"projectId": store.DefaultProjectID, "sourceKey": "github:issue:private", "name": "Sneak", "text": "mine now"}},
+		{"archive_document", map[string]any{"documentId": docID}},
 		{"create_document", map[string]any{"projectId": store.DefaultProjectID, "name": "Sneak"}},
 	} {
 		body, isErr := call(t, cs, tool.name, tool.args)
