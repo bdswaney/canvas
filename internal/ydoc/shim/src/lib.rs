@@ -20,6 +20,7 @@
 
 use std::mem;
 
+use similar::{capture_diff_slices, Algorithm, DiffTag};
 use yrs::updates::decoder::Decode;
 use yrs::{Doc, GetString, Options, OffsetKind, ReadTxn, StateVector, Text, Transact, Update};
 
@@ -172,14 +173,16 @@ pub extern "C" fn canvas_text(state_ptr: u32, state_len: u32, name_ptr: u32, nam
 /// It is deliberately not a delete-everything-and-reinsert. That is what
 /// restore does, and restore is documented as an edit rather than a rollback
 /// precisely because it cannot merge: a peer typing during one has their
-/// keystrokes folded into the replacement at best. Here the common prefix and
-/// suffix are left untouched and only the span between them is rewritten, so
-/// an edit to one paragraph leaves concurrent edits to another alone.
+/// keystrokes folded into the replacement at best. Here the current text is
+/// diffed against `next` and each hunk becomes its own delete or insert, so
+/// two small changes far apart are two small operations and every character
+/// between them keeps its Yjs item id. A peer typing anywhere that the diff
+/// leaves unchanged keeps their work, and their keystrokes stay where they
+/// typed them.
 ///
-/// It is a prefix/suffix trim rather than a real diff, so scattered changes
-/// collapse into one span covering all of them. That is a smaller conflict
-/// surface than replacing everything and a larger one than a Myers diff would
-/// give; if it proves too coarse, this is the place to improve.
+/// It is still a diff of text against text: it cannot tell a change the caller
+/// meant from a change somebody else made after the caller last read. Callers
+/// that care detect that before calling; see edit_document in internal/mcp.
 #[no_mangle]
 pub extern "C" fn canvas_set_text(
     state_ptr: u32,
@@ -205,22 +208,21 @@ pub extern "C" fn canvas_set_text(
     let text = doc.get_or_insert_text(name.as_str());
 
     let before = doc.transact().state_vector();
-    let current: Vec<u16> = text.get_string(&doc.transact()).encode_utf16().collect();
-    let desired: Vec<u16> = next.encode_utf16().collect();
-
-    let (start, keep_tail) = trim(&current, &desired);
-    let removed = current.len() - start - keep_tail;
-    let inserted = &desired[start..desired.len() - keep_tail];
+    let current = text.get_string(&doc.transact());
 
     {
         let mut txn = doc.transact_mut();
-        if removed > 0 {
-            text.remove_range(&mut txn, start as u32, removed as u32);
-        }
-        if !inserted.is_empty() {
-            match String::from_utf16(inserted) {
-                Ok(chunk) => text.insert(&mut txn, start as u32, &chunk),
-                Err(e) => return err(&format!("replacement span: {e}")),
+        // Applied front to back, so `at` is always an index into the text as
+        // it stands after the edits before it.
+        let mut at: u32 = 0;
+        for edit in edits(&current, next) {
+            match edit {
+                Edit::Keep(units) => at += units,
+                Edit::Delete(units) => text.remove_range(&mut txn, at, units),
+                Edit::Insert(chunk) => {
+                    text.insert(&mut txn, at, chunk);
+                    at += utf16_len(chunk);
+                }
             }
         }
     }
@@ -230,35 +232,109 @@ pub extern "C" fn canvas_set_text(
     ok(&update)
 }
 
-/// trim returns how much of the head the two share and how much of the tail,
-/// without ever splitting a surrogate pair — a boundary inside one would make
-/// the indices meaningless to a client counting UTF-16 code units.
-fn trim(current: &[u16], desired: &[u16]) -> (usize, usize) {
-    let mut start = 0;
-    while start < current.len() && start < desired.len() && current[start] == desired[start] {
-        start += 1;
-    }
-    if start > 0 && is_high_surrogate(current[start - 1]) {
-        start -= 1;
-    }
-
-    let mut tail = 0;
-    while tail < current.len() - start
-        && tail < desired.len() - start
-        && current[current.len() - 1 - tail] == desired[desired.len() - 1 - tail]
-    {
-        tail += 1;
-    }
-    if tail > 0 && is_low_surrogate(desired[desired.len() - tail]) {
-        tail -= 1;
-    }
-    (start, tail)
+/// One step of turning the current text into the desired one. Lengths are in
+/// UTF-16 code units, because that is what the document's OffsetKind makes
+/// yrs count; see document.
+#[derive(Debug, PartialEq)]
+enum Edit<'a> {
+    Keep(u32),
+    Delete(u32),
+    Insert(&'a str),
 }
 
-fn is_high_surrogate(unit: u16) -> bool {
-    (0xD800..=0xDBFF).contains(&unit)
+/// Past this many characters on the two sides together, a changed block is
+/// replaced rather than refined. Myers costs (N+M)·D, which is cheap for the
+/// scattered small edits this exists for and quadratic for a block rewritten
+/// wholesale, where a character diff would find nothing worth keeping anyway.
+const REFINE_LIMIT: usize = 20_000;
+
+/// edits diffs `current` against `desired`: first by line, which keeps the
+/// cost proportional to what changed, then by character inside each changed
+/// block, so fixing one word in a line rewrites that word and not the line.
+///
+/// The character pass works on `char`s rather than UTF-16 units, so no hunk
+/// boundary can fall inside a surrogate pair; lengths are converted to UTF-16
+/// only when emitted. It may split a grapheme cluster such as a ZWJ emoji
+/// sequence, which is harmless: the concatenated result is still exactly
+/// `desired`.
+fn edits<'a>(current: &str, desired: &'a str) -> Vec<Edit<'a>> {
+    let old_lines: Vec<&str> = current.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = desired.split_inclusive('\n').collect();
+    let old_at = offsets(&old_lines);
+    let new_at = offsets(&new_lines);
+
+    let mut out = Vec::new();
+    for op in capture_diff_slices(Algorithm::Myers, &old_lines, &new_lines) {
+        let (tag, old, new) = op.as_tag_tuple();
+        let old_block = &current[old_at[old.start]..old_at[old.end]];
+        let new_block = &desired[new_at[new.start]..new_at[new.end]];
+        match tag {
+            DiffTag::Equal => push(&mut out, Edit::Keep(utf16_len(old_block))),
+            DiffTag::Delete => push(&mut out, Edit::Delete(utf16_len(old_block))),
+            DiffTag::Insert => push(&mut out, Edit::Insert(new_block)),
+            DiffTag::Replace => refine(&mut out, old_block, new_block),
+        }
+    }
+    out
 }
 
-fn is_low_surrogate(unit: u16) -> bool {
-    (0xDC00..=0xDFFF).contains(&unit)
+/// refine diffs one changed block character by character.
+fn refine<'a>(out: &mut Vec<Edit<'a>>, old_block: &str, new_block: &'a str) {
+    let old_chars: Vec<char> = old_block.chars().collect();
+    let new_chars: Vec<char> = new_block.chars().collect();
+    if old_chars.len() + new_chars.len() > REFINE_LIMIT {
+        push(out, Edit::Delete(utf16_len(old_block)));
+        push(out, Edit::Insert(new_block));
+        return;
+    }
+    // Byte offset of every character in the new block, and of its end, so an
+    // insert can borrow its text rather than re-encode it.
+    let new_bytes: Vec<usize> = new_block
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(new_block.len()))
+        .collect();
+    let units = |chars: &[char]| chars.iter().map(|c| c.len_utf16() as u32).sum::<u32>();
+
+    for op in capture_diff_slices(Algorithm::Myers, &old_chars, &new_chars) {
+        let (tag, old, new) = op.as_tag_tuple();
+        let inserted = &new_block[new_bytes[new.start]..new_bytes[new.end]];
+        match tag {
+            DiffTag::Equal => push(out, Edit::Keep(units(&old_chars[old]))),
+            DiffTag::Delete => push(out, Edit::Delete(units(&old_chars[old]))),
+            DiffTag::Insert => push(out, Edit::Insert(inserted)),
+            DiffTag::Replace => {
+                push(out, Edit::Delete(units(&old_chars[old])));
+                push(out, Edit::Insert(inserted));
+            }
+        }
+    }
+}
+
+/// push appends an edit, folding it into the previous one when both keep or
+/// both delete, and dropping empty ones.
+fn push<'a>(out: &mut Vec<Edit<'a>>, edit: Edit<'a>) {
+    match (out.last_mut(), &edit) {
+        (_, Edit::Keep(0)) | (_, Edit::Delete(0)) => {}
+        (_, Edit::Insert(chunk)) if chunk.is_empty() => {}
+        (Some(Edit::Keep(prev)), Edit::Keep(units)) => *prev += units,
+        (Some(Edit::Delete(prev)), Edit::Delete(units)) => *prev += units,
+        _ => out.push(edit),
+    }
+}
+
+/// offsets returns the byte offset at which each line starts, plus the end.
+fn offsets(lines: &[&str]) -> Vec<usize> {
+    let mut at = Vec::with_capacity(lines.len() + 1);
+    let mut sum = 0;
+    at.push(0);
+    for line in lines {
+        sum += line.len();
+        at.push(sum);
+    }
+    at
+}
+
+fn utf16_len(s: &str) -> u32 {
+    s.encode_utf16().count() as u32
 }

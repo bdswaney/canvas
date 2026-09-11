@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
 
 // This suite is the reason the WASM approach is defensible at all.
@@ -266,6 +267,63 @@ func TestConcurrentEditsConverge(t *testing.T) {
 	}
 }
 
+// A browser typing between two distant server edits, both made against the
+// same state. The browser's characters are anchored to the items around the
+// cursor, so they land where they were typed only if the server left those
+// items alone — and yjs has to agree about it, not just yrs.
+func TestABrowserTypingBetweenDistantServerEditsKeepsItsPlace(t *testing.T) {
+	e := engine(t)
+	start := "👍 top line\n" + strings.Repeat("café middle line\n", 40) + "bottom 🎉 line\n"
+	base := yjs(t, map[string]any{
+		"op":    "edit",
+		"state": nil,
+		"ops": []any{
+			map[string]any{"insert": map[string]any{"index": 0, "text": start}},
+		},
+	})
+	state := unb64(t, base.State)
+
+	next := strings.Replace(strings.Replace(start, "top", "TOP", 1), "bottom", "BOTTOM", 1)
+	serverUpdate, err := e.SetText(t.Context(), state, "notes", next)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Twenty lines in; the browser counts UTF-16 units.
+	at := len("👍 top line\n") + 20*len("café middle line\n")
+	browser := yjs(t, map[string]any{
+		"op":    "edit",
+		"state": base.State,
+		"ops": []any{
+			map[string]any{"insert": map[string]any{
+				"index": len(utf16.Encode([]rune(start[:at]))), "text": "[typed]",
+			}},
+		},
+	})
+
+	serverFinal, err := e.Merge(t.Context(), [][]byte{state, serverUpdate, unb64(t, browser.Update)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverText, err := e.Text(t.Context(), serverFinal, "notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserFinal := yjs(t, map[string]any{
+		"op":      "merge",
+		"updates": []string{base.State, browser.Update, b64(serverUpdate)},
+	})
+
+	if serverText != browserFinal.Text {
+		t.Fatalf("diverged:\n  server:  %q\n  browser: %q", serverText, browserFinal.Text)
+	}
+	// "TOP" and "BOTTOM" are the same length as what they replace, so the
+	// offset is unchanged.
+	if want := next[:at] + "[typed]" + next[at:]; serverText != want {
+		t.Fatalf("the browser's typing moved:\n  got:  %q\n  want: %q", serverText, want)
+	}
+}
+
 // Compaction replaces many journal rows with one update. The server's merge
 // has to produce something a browser reads identically, or joining a document
 // after a compaction shows different text.
@@ -323,6 +381,11 @@ func TestServerEditsAfterNonASCIIStayAligned(t *testing.T) {
 		{"👍👍 middle", "👍👍 middle end"},
 		{"naïve résumé", "naïve résumé!"},
 		{"a👍b", "a👍bc"},
+		// Edits in the middle and in several places at once, where the diff
+		// emits more than one operation and each index depends on the last.
+		{"emoji: 👩‍💻 family 👨‍👩‍👧‍👦 flag 🇬🇧", "emoji: 👩‍💻 FAMILY 👨‍👩‍👧 flag 🇺🇸!"},
+		{"mixed 👍 café 🎉 end", "mixed 👎 cafe 🎉 fin"},
+		{"naïve résumé\nsecond 👍 line\nthird", "naive résumé\nsecond 👍👍 line\nthird café"},
 	} {
 		t.Run(tt.base, func(t *testing.T) {
 			base := yjs(t, map[string]any{
