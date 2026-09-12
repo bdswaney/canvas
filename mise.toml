@@ -97,4 +97,4 @@ run = "go run . mcp"
 description = "Build and run the server for local http development"
 depends = ["build"]
 # A separate binary from build:server, whose output keeps secure cookies.
-run = "go build -tags insecurecookie -o bin/canvas-dev . && ./bin/canvas-dev"
+run = "go build -tags insecurecookie -o bin/canvas-dev . && CANVAS_ENV=development ./bin/canvas-dev"

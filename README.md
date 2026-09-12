@@ -28,7 +28,7 @@ Open <http://127.0.0.1:8080>, sign in, and create a project and document.
 
 The first account must be created from the command line. Replace the example password before running the command; CLI passwords are visible in shell history and process arguments. Migrations run automatically when the server or an administrative command starts.
 
-`mise run serve` watches the source with Air, rebuilds the app, and restarts the server. It uses a development build that allows session cookies over plain HTTP. Refresh the browser after a rebuild.
+`mise run serve` watches the source with Air, rebuilds the app, and restarts the server. It explicitly runs in `CANVAS_ENV=development`, which permits an in-memory ephemeral cookie key; the development build also allows session cookies over plain HTTP. Refresh the browser after a rebuild.
 
 The initial `mise run build` creates `dist/`, which Go embeds at compile time. It is required before running Go commands on a fresh checkout, including `createuser` and `migrate`.
 
@@ -103,9 +103,9 @@ Run the production binary behind an HTTPS reverse proxy that supports WebSockets
 | Variable | Purpose |
 | --- | --- |
 | `DATABASE_URL` | Required PostgreSQL connection string. PostgreSQL 18+ is required by the session schema. |
-| `COOKIE_KEY` | Base64-encoded key containing at least 32 random bytes. Keep it stable across restarts. If unset, a key is generated and printed at startup, and existing sessions are invalidated on restart. |
+| `COOKIE_KEY` | Base64-encoded key containing at least 32 random bytes. Required for the browser server unless `CANVAS_ENV=development`; development may use an in-memory ephemeral key. Keys are never printed or logged. Keep a production key stable across restarts or existing sessions are invalidated. |
 | `ADDR` | Listen address; defaults to `127.0.0.1:8080`. |
-| `CANVAS_ENV` | Set to `production` for deployment. Any nonempty value other than `development` requires explicit `ORIGINS`. |
+| `CANVAS_ENV` | Set to `production` for deployment. Only the exact value `development` permits an ephemeral browser cookie key; any other value, including unset or unknown values, requires `COOKIE_KEY`. Any nonempty value other than `development` requires explicit `ORIGINS`. |
 | `ORIGINS` | Comma-separated allowed WebSocket origin patterns, such as `nply.example.com`. Unset development configurations allow ngrok wildcard hosts. |
 
 Generate a cookie key once and store it with your deployment secrets:

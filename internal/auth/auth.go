@@ -77,10 +77,14 @@ type PasswordAuth struct {
 }
 
 // NewPasswordAuth builds username/password authentication over the app's own
-// connection pool. cookieKey is base64 of at least 32 random bytes; empty
-// makes the session package generate one and print it, which is fine for
-// development but invalidates every session on restart.
+// connection pool. cookieKey is base64 of at least 32 random bytes. The
+// session package generates and prints a key when given an empty string, so
+// reject that path here as a defense against callers accidentally leaking key
+// material.
 func NewPasswordAuth(pool *pgxpool.Pool, cookieKey string) (*PasswordAuth, error) {
+	if cookieKey == "" {
+		return nil, errors.New("cookie key must not be empty")
+	}
 	auth, err := session.NewPasswordAuth[session.NoCustomData, session.NoCustomData](
 		sessionstorage.NewPostgresPassword(pool),
 		cookieKey,

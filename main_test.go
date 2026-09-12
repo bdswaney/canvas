@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -53,7 +54,7 @@ func TestCLIValidationDoesNotStartRuntime(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var output bytes.Buffer
 			started := false
-			factory := func(context.Context, bool) (*commandRuntime, error) {
+			factory := func(context.Context, runtimeOptions) (*commandRuntime, error) {
 				started = true
 				return nil, errors.New("runtime should not start")
 			}
@@ -98,6 +99,7 @@ func captureCLIStderr(t *testing.T) *os.File {
 func TestCLIStartupKeepsDiagnosticsOffStdout(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	t.Setenv("COOKIE_KEY", "")
+	t.Setenv("CANVAS_ENV", "development")
 	tests := []struct {
 		name       string
 		args       []string
@@ -120,10 +122,16 @@ func TestCLIStartupKeepsDiagnosticsOffStdout(t *testing.T) {
 			calls := 0
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
-			err := executeCLI(ctx, tt.args, &protocol, func(gotCtx context.Context, needEngine bool) (*commandRuntime, error) {
+			err := executeCLI(ctx, tt.args, &protocol, func(gotCtx context.Context, options runtimeOptions) (*commandRuntime, error) {
 				calls++
-				if gotCtx != ctx || needEngine != tt.needEngine {
-					t.Errorf("incorrect runtime context or engine requirement: needEngine=%v", needEngine)
+				if gotCtx != ctx || options.needEngine != tt.needEngine {
+					t.Errorf("incorrect runtime context or engine requirement: needEngine=%v", options.needEngine)
+				}
+				if tt.name == "server" && options.cookieKey == "" {
+					t.Error("browser runtime received an empty cookie key")
+				}
+				if tt.name != "server" && options.cookieKey != "" {
+					t.Error("non-browser runtime received a browser cookie key")
 				}
 				// Simulate the session dependency's direct stdout diagnostic.
 				fmt.Fprintln(os.Stdout, "startup diagnostic")
@@ -149,6 +157,146 @@ func TestCLIStartupKeepsDiagnosticsOffStdout(t *testing.T) {
 	}
 }
 
+func captureCLIStreams(t *testing.T) (stdout, stderr *os.File) {
+	t.Helper()
+	stdout, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stderr, err = os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalStdout, originalStderr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = stdout, stderr
+	t.Cleanup(func() {
+		os.Stdout, os.Stderr = originalStdout, originalStderr
+		stdout.Close()
+		stderr.Close()
+	})
+	return stdout, stderr
+}
+
+func TestCookieKeyPolicy(t *testing.T) {
+	valid := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, cookieKeyBytes))
+	short := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, cookieKeyBytes-1))
+	tests := []struct {
+		name       string
+		browser    bool
+		env        string
+		configured string
+		want       string
+		wantErr    bool
+		wantBytes  int
+	}{
+		{name: "browser missing unset", browser: true, wantErr: true},
+		{name: "browser missing production", browser: true, env: "production", wantErr: true},
+		{name: "browser missing unknown", browser: true, env: "staging", wantErr: true},
+		{name: "browser development generates", browser: true, env: "development", wantBytes: cookieKeyBytes},
+		{name: "browser malformed", browser: true, env: "development", configured: "not-base64", wantErr: true},
+		{name: "browser short", browser: true, env: "development", configured: short, wantErr: true},
+		{name: "browser configured outside development", browser: true, env: "production", configured: valid, want: valid},
+		{name: "non-browser missing", env: "production", wantBytes: cookieKeyBytes},
+		{name: "non-browser malformed", env: "production", configured: "not-base64", wantBytes: cookieKeyBytes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CANVAS_ENV", tt.env)
+			t.Setenv("COOKIE_KEY", tt.configured)
+			got, err := resolveCookieKey(tt.browser)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("resolveCookieKey succeeded; want error")
+				}
+				if tt.configured != "" && strings.Contains(err.Error(), tt.configured) {
+					t.Fatalf("error leaked configured key: %q", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.want != "" && got != tt.want {
+				t.Fatalf("key=%q, want configured key", got)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(got)
+			if err != nil || len(decoded) < tt.wantBytes {
+				t.Fatalf("generated key is not at least %d decoded bytes: %q (%v)", tt.wantBytes, got, err)
+			}
+		})
+	}
+}
+
+func TestConfiguredCookieKeyRemainsStable(t *testing.T) {
+	configured := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x24}, cookieKeyBytes))
+	t.Setenv("CANVAS_ENV", "production")
+	t.Setenv("COOKIE_KEY", configured)
+	first, err := resolveCookieKey(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := resolveCookieKey(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != configured || second != configured || first != second {
+		t.Fatalf("resolved keys changed: first=%q second=%q", first, second)
+	}
+}
+
+func TestGeneratedCookieKeyIsNeverLogged(t *testing.T) {
+	t.Setenv("CANVAS_ENV", "development")
+	t.Setenv("COOKIE_KEY", "")
+	stdout, stderr := captureCLIStreams(t)
+	key, err := resolveCookieKey(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]*os.File{"stdout": stdout, "stderr": stderr} {
+		contents, err := os.ReadFile(file.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(contents), key) || strings.Contains(string(contents), "Using random Key") {
+			t.Fatalf("generated key leaked to %s: %q", name, contents)
+		}
+	}
+}
+
+func TestBrowserServerRejectsMissingCookieKeyBeforeRuntime(t *testing.T) {
+	for _, env := range []string{"", "production", "staging"} {
+		t.Run("env="+env, func(t *testing.T) {
+			t.Setenv("CANVAS_ENV", env)
+			t.Setenv("COOKIE_KEY", "")
+			called := false
+			err := executeCLI(t.Context(), nil, new(bytes.Buffer), func(context.Context, runtimeOptions) (*commandRuntime, error) {
+				called = true
+				return nil, errors.New("runtime should not start")
+			})
+			if called {
+				t.Fatal("browser runtime started without a cookie key")
+			}
+			if err == nil || !strings.Contains(err.Error(), "COOKIE_KEY is required") {
+				t.Fatalf("error=%v, want missing-key error", err)
+			}
+		})
+	}
+}
+
+func TestNonBrowserCommandIgnoresMalformedCookieKey(t *testing.T) {
+	t.Setenv("CANVAS_ENV", "production")
+	t.Setenv("COOKIE_KEY", "not-base64")
+	stop := errors.New("stop before database operations")
+	called := false
+	err := executeCLI(t.Context(), []string{"createuser", "alice", "password"}, new(bytes.Buffer), func(context.Context, runtimeOptions) (*commandRuntime, error) {
+		called = true
+		return nil, stop
+	})
+	if !called || !errors.Is(err, stop) {
+		t.Fatalf("runtime called=%v, error=%v; want non-browser startup", called, err)
+	}
+}
+
 func TestCLICompletionWritesToStdoutWithoutRuntime(t *testing.T) {
 	t.Setenv("DATABASE_URL", "")
 	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
@@ -156,7 +304,7 @@ func TestCLICompletionWritesToStdoutWithoutRuntime(t *testing.T) {
 			stderr := captureCLIStderr(t)
 			originalStdout := os.Stdout
 			var output bytes.Buffer
-			err := executeCLI(t.Context(), []string{"completion", shell}, &output, func(context.Context, bool) (*commandRuntime, error) {
+			err := executeCLI(t.Context(), []string{"completion", shell}, &output, func(context.Context, runtimeOptions) (*commandRuntime, error) {
 				t.Error("completion started the runtime")
 				return nil, errors.New("unexpected startup")
 			})

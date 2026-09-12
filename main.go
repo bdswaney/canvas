@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -51,7 +53,12 @@ func (r *commandRuntime) close() {
 	}
 }
 
-type runtimeFactory func(context.Context, bool) (*commandRuntime, error)
+type runtimeOptions struct {
+	needEngine bool
+	cookieKey  string
+}
+
+type runtimeFactory func(context.Context, runtimeOptions) (*commandRuntime, error)
 
 type protocolOutput struct{ io.Writer }
 
@@ -86,8 +93,19 @@ func executeCLI(ctx context.Context, args []string, protocol io.Writer, factory 
 
 // newRuntime performs startup only for a command that actually needs it. The
 // engine is optional because migrate, account administration, and token
-// administration do not interpret documents.
-func newRuntime(ctx context.Context, needEngine bool) (*commandRuntime, error) {
+// administration do not interpret documents. Browser startup resolves its key
+// before calling this function; other commands get a disposable key because
+// the auth package still needs one even though they do not serve cookies.
+func newRuntime(ctx context.Context, options runtimeOptions) (*commandRuntime, error) {
+	cookieKey := options.cookieKey
+	if cookieKey == "" {
+		var err error
+		cookieKey, err = resolveCookieKey(false)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	databaseURL, err := requiredDatabaseURL()
 	if err != nil {
 		return nil, err
@@ -103,14 +121,14 @@ func newRuntime(ctx context.Context, needEngine bool) (*commandRuntime, error) {
 		return nil, err
 	}
 
-	authn, err := auth.NewPasswordAuth(db.Pool(), os.Getenv("COOKIE_KEY"))
+	authn, err := auth.NewPasswordAuth(db.Pool(), cookieKey)
 	if err != nil {
 		db.Close()
 		return nil, err
 	}
 
 	runtime := &commandRuntime{db: db, authn: authn}
-	if needEngine {
+	if options.needEngine {
 		runtime.engine, err = ydoc.New(ctx)
 		if err != nil {
 			runtime.close()
@@ -139,7 +157,14 @@ func newRootCommand(protocol io.Writer, factory runtimeFactory) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runtime, err := factory(cmd.Context(), true)
+			cookieKey, err := resolveCookieKey(true)
+			if err != nil {
+				return err
+			}
+			runtime, err := factory(cmd.Context(), runtimeOptions{
+				needEngine: true,
+				cookieKey:  cookieKey,
+			})
 			if err != nil {
 				return err
 			}
@@ -187,7 +212,7 @@ func newCreateUserCommand(factory runtimeFactory) *cobra.Command {
 		Short: "Create a user account",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runtime, err := factory(cmd.Context(), false)
+			runtime, err := factory(cmd.Context(), runtimeOptions{})
 			if err != nil {
 				return err
 			}
@@ -207,7 +232,7 @@ func newDeleteUserCommand(factory runtimeFactory) *cobra.Command {
 		Short: "Delete a user account",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runtime, err := factory(cmd.Context(), false)
+			runtime, err := factory(cmd.Context(), runtimeOptions{})
 			if err != nil {
 				return err
 			}
@@ -237,7 +262,7 @@ func newTokenCommand(factory runtimeFactory, protocol io.Writer) *cobra.Command 
 			Short: "Create an access token",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				runtime, err := factory(cmd.Context(), false)
+				runtime, err := factory(cmd.Context(), runtimeOptions{})
 				if err != nil {
 					return err
 				}
@@ -257,7 +282,7 @@ func newTokenCommand(factory runtimeFactory, protocol io.Writer) *cobra.Command 
 			Short: "List a user's access tokens",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				runtime, err := factory(cmd.Context(), false)
+				runtime, err := factory(cmd.Context(), runtimeOptions{})
 				if err != nil {
 					return err
 				}
@@ -291,7 +316,7 @@ func newTokenCommand(factory runtimeFactory, protocol io.Writer) *cobra.Command 
 			Short: "Revoke an access token",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				runtime, err := factory(cmd.Context(), false)
+				runtime, err := factory(cmd.Context(), runtimeOptions{})
 				if err != nil {
 					return err
 				}
@@ -313,7 +338,7 @@ func newMCPCommand(factory runtimeFactory, protocol io.Writer) *cobra.Command {
 		Short: "Serve nPly over MCP on stdio",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			runtime, err := factory(cmd.Context(), true)
+			runtime, err := factory(cmd.Context(), runtimeOptions{needEngine: true})
 			if err != nil {
 				return err
 			}
@@ -382,6 +407,40 @@ func runServer(ctx context.Context, runtime *commandRuntime) error {
 		return err
 	}
 	return nil
+}
+
+const cookieKeyBytes = 32
+
+// resolveCookieKey applies the browser-server cookie policy when browser is
+// true. Non-browser commands intentionally tolerate an absent or malformed
+// COOKIE_KEY: they need an auth object for database operations, not a stable
+// browser session, so they receive a disposable key instead.
+func resolveCookieKey(browser bool) (string, error) {
+	configured := os.Getenv("COOKIE_KEY")
+	if configured != "" {
+		if validCookieKey(configured) {
+			return configured, nil
+		}
+		if browser {
+			return "", errors.New("COOKIE_KEY must be standard base64 containing at least 32 decoded bytes")
+		}
+	}
+
+	if browser && os.Getenv("CANVAS_ENV") != "development" {
+		return "", errors.New("COOKIE_KEY is required unless CANVAS_ENV=development")
+	}
+
+	key := make([]byte, cookieKeyBytes)
+	if _, err := rand.Read(key); err != nil {
+		return "", fmt.Errorf("generate ephemeral cookie key: %w", err)
+	}
+	return base64.StdEncoding.EncodeToString(key), nil
+}
+
+func validCookieKey(value string) bool {
+	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
+	return err == nil && len(decoded) >= cookieKeyBytes &&
+		base64.StdEncoding.EncodeToString(decoded) == value
 }
 
 // origins returns the allowed WebSocket origins. ORIGINS is required unless
