@@ -31,6 +31,10 @@ func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authent
 	}
 
 	router := chi.NewRouter()
+	// Set browser security headers before dispatch so every response shares one
+	// policy, including API, MCP, WebSocket, error, and not-found responses.
+	// The reverse proxy, not this application, owns HSTS.
+	router.Use(browserSecurityHeaders)
 	router.Use(middleware.Recoverer)
 
 	// The Model Context Protocol, for clients that are not browsers. Mounted
@@ -90,10 +94,30 @@ func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authent
 	return router, nil
 }
 
+// browserSecurityHeaders is intentionally application-wide. In particular,
+// keeping it outside the SPA handler ensures API, MCP, WebSocket, and error
+// responses cannot accidentally omit the same browser policy.
+func browserSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
+const themeBootstrapHash = "'sha256-KjJ44Zt8j9xQtROEVZXo5jHHQNOi09mt5jEPw5Ar8UE='"
+
+const contentSecurityPolicy = "default-src 'self'; " +
+	"base-uri 'none'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; " +
+	"script-src 'self' " + themeBootstrapHash + "; script-src-attr 'none'; " +
+	"style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; " +
+	"media-src 'none'; frame-src 'none'; connect-src 'self' ws: wss:"
+
 func serveApp(assets fs.FS, index []byte) http.HandlerFunc {
 	files := http.FileServer(http.FS(assets))
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
