@@ -39,9 +39,9 @@ depends = ["build"]
 run = "go build -o bin/canvas ."
 
 [tasks.test]
-description = "Build the frontend and run Go tests"
+description = "Build the frontend and run preview plus Go tests"
 depends = ["build"]
-run = "go test ./..."
+run = "npm run test:preview && go test ./..."
 
 [tasks.preview]
 description = "Preview the built frontend locally"
