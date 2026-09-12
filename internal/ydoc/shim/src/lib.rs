@@ -22,7 +22,9 @@ use std::mem;
 
 use similar::{capture_diff_slices, Algorithm, DiffTag};
 use yrs::updates::decoder::Decode;
-use yrs::{Doc, GetString, Options, OffsetKind, ReadTxn, StateVector, Text, Transact, Update};
+use yrs::{
+    ClientID, Doc, GetString, OffsetKind, Options, ReadTxn, StateVector, Text, Transact, Update,
+};
 
 const STATUS_OK: u8 = 0;
 const STATUS_ERR: u8 = 1;
@@ -44,7 +46,11 @@ pub extern "C" fn canvas_dealloc(ptr: u32, len: u32) {
         return;
     }
     unsafe {
-        drop(Vec::from_raw_parts(ptr as *mut u8, len as usize, len as usize));
+        drop(Vec::from_raw_parts(
+            ptr as *mut u8,
+            len as usize,
+            len as usize,
+        ));
     }
 }
 
@@ -92,7 +98,8 @@ fn document(state: &[u8]) -> Result<Doc, String> {
     if !state.is_empty() {
         let update = Update::decode_v1(state).map_err(|e| format!("decode state: {e}"))?;
         let mut txn = doc.transact_mut();
-        txn.apply_update(update);
+        txn.apply_update(update)
+            .map_err(|e| format!("apply state: {e}"))?;
     }
     Ok(doc)
 }
@@ -103,14 +110,15 @@ fn name_of(ptr: u32, len: u32) -> Result<String, String> {
 
 fn editing_document(state: &[u8], client_id: u32) -> Result<Doc, String> {
     let doc = Doc::with_options(Options {
-        client_id: client_id as u64,
+        client_id: ClientID::new(client_id as u64),
         offset_kind: OffsetKind::Utf16,
         ..Default::default()
     });
     if !state.is_empty() {
         let update = Update::decode_v1(state).map_err(|e| format!("decode state: {e}"))?;
         let mut txn = doc.transact_mut();
-        txn.apply_update(update);
+        txn.apply_update(update)
+            .map_err(|e| format!("apply state: {e}"))?;
     }
     Ok(doc)
 }
@@ -135,19 +143,25 @@ pub extern "C" fn canvas_merge_updates(ptr: u32, len: u32) -> u64 {
             if at + 4 > buf.len() {
                 return err("truncated update length");
             }
-            let size = u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]) as usize;
+            let size =
+                u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]) as usize;
             at += 4;
             if at + size > buf.len() {
                 return err("truncated update body");
             }
-            match Update::decode_v1(&buf[at..at + size]) {
-                Ok(update) => txn.apply_update(update),
+            let update = match Update::decode_v1(&buf[at..at + size]) {
+                Ok(update) => update,
                 Err(e) => return err(&format!("decode update: {e}")),
+            };
+            if let Err(e) = txn.apply_update(update) {
+                return err(&format!("apply update: {e}"));
             }
             at += size;
         }
     }
-    let merged = doc.transact().encode_state_as_update_v1(&StateVector::default());
+    let merged = doc
+        .transact()
+        .encode_state_as_update_v1(&StateVector::default());
     ok(&merged)
 }
 
