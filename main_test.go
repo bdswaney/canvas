@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -241,6 +242,83 @@ func TestConfiguredCookieKeyRemainsStable(t *testing.T) {
 	}
 	if first != configured || second != configured || first != second {
 		t.Fatalf("resolved keys changed: first=%q second=%q", first, second)
+	}
+}
+
+func TestOriginsPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		value   string
+		want    []string
+		wantErr string
+	}{
+		{
+			name: "exact development uses tunnel defaults",
+			env:  "development",
+			want: defaultOrigins,
+		},
+		{
+			name:    "unset environment requires origins",
+			wantErr: "ORIGINS is required",
+		},
+		{
+			name:    "whitespace environment requires origins",
+			env:     " development ",
+			wantErr: "ORIGINS is required",
+		},
+		{
+			name:    "unknown environment requires origins",
+			env:     "staging",
+			wantErr: "ORIGINS is required",
+		},
+		{
+			name:    "production requires origins",
+			env:     "production",
+			wantErr: "ORIGINS is required",
+		},
+		{
+			name:    "whitespace origins are rejected",
+			env:     "development",
+			value:   " \t,  ",
+			wantErr: "ORIGINS is set but lists no origins",
+		},
+		{
+			name:  "explicit origins replace development defaults",
+			env:   "development",
+			value: " nply.example.com, *.nply.example.com ",
+			want:  []string{"nply.example.com", "*.nply.example.com"},
+		},
+		{
+			name:  "explicit origins work outside development",
+			env:   "production",
+			value: " app.example.com , admin.example.com ",
+			want:  []string{"app.example.com", "admin.example.com"},
+		},
+		{
+			name:  "explicit origins work with unset environment",
+			value: " app.example.com ",
+			want:  []string{"app.example.com"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("CANVAS_ENV", tt.env)
+			t.Setenv("ORIGINS", tt.value)
+			got, err := origins()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("origins error=%v, want substring %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("origins=%v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
