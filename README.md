@@ -107,6 +107,11 @@ Run the production binary behind an HTTPS reverse proxy that supports WebSockets
 | `ADDR` | Listen address; defaults to `127.0.0.1:8080`. |
 | `CANVAS_ENV` | Set to `production` for deployment. Only the exact value `development` permits an ephemeral browser cookie key and the ngrok wildcard origin defaults; any other value, including unset or unknown values, requires `COOKIE_KEY` and explicit `ORIGINS`. |
 | `ORIGINS` | Comma-separated allowed WebSocket origin patterns, such as `nply.example.com`. Values are trimmed and replace the defaults. If unset, exact `CANVAS_ENV=development` uses ngrok wildcard hosts; all other environments must provide at least one origin. |
+| `MCP_MAX_REQUEST_BODY_BYTES` | Maximum stateless MCP POST body; defaults to 4 MiB. The limit is always enabled. |
+| `MCP_GLOBAL_CONCURRENCY` / `MCP_ACCOUNT_CONCURRENCY` | Process-local concurrent MCP request limits; defaults to 64 globally and 4 per account. Requests over either limit receive HTTP 429. |
+| `MCP_GLOBAL_RATE_PER_MINUTE` / `MCP_GLOBAL_RATE_BURST` | Process-local global MCP request rate and initial burst; defaults to 600 per minute and 100. |
+| `MCP_ACCOUNT_RATE_PER_MINUTE` / `MCP_ACCOUNT_RATE_BURST` | Process-local per-account MCP request rate and initial burst; defaults to 60 per minute and 20. |
+| `MCP_MAX_ACCOUNT_RATE_ENTRIES` | Bound for retained per-account rate metadata. Idle entries are evicted when full; defaults to 1024. |
 
 Generate a cookie key once and store it with your deployment secrets:
 
@@ -137,7 +142,9 @@ For temporary local sharing, install ngrok and run `mise run tunnel`. It targets
 
 ### HTTP
 
-Use the web server's `/api/mcp` endpoint with an MCP client that supports Streamable HTTP. This mode shares the browser collaboration relay, so edits reach users who already have the document open.
+Use the web server's `/api/mcp` endpoint with an MCP client that supports Streamable HTTP. The endpoint is stateless and POST-only: every request authenticates its bearer token, creates a temporary SDK session, and emits no `Mcp-Session-Id`. This mode shares the browser collaboration relay, so edits reach users who already have the document open.
+
+Accepted requests are bounded by process-local global and per-account concurrency and token-bucket rate limits. Requests over a bound receive HTTP 429 with `Retry-After` before MCP tools run. The defaults are 64 global / 4 per account in flight, 600 global requests per minute with a burst of 100, and 60 per account per minute with a burst of 20. Per-account rate metadata is bounded and evicted; these quotas do not coordinate across processes or replicas. Set the `MCP_*` variables in the deployment table to tune them. For protocol version 2026-07-28 and later, request cancellation follows the HTTP request; legacy protocol versions retain the SDK's compatibility behavior. nPly does not impose an arbitrary timeout on mutating tools.
 
 Create a token for an existing account:
 

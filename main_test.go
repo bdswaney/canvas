@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/bdswaney/canvas/internal/auth/authtest"
+	mcpserver "github.com/bdswaney/canvas/internal/mcp"
 	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/server"
 	"github.com/bdswaney/canvas/internal/store"
@@ -419,5 +420,57 @@ func TestEmbeddedFrontend(t *testing.T) {
 	handler.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/artifacts/example", nil))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `id="root"`) {
 		t.Fatalf("embedded app unavailable: status %d", w.Code)
+	}
+}
+
+func TestMCPHTTPConfigDefaults(t *testing.T) {
+	for _, name := range []string{
+		"MCP_MAX_REQUEST_BODY_BYTES", "MCP_GLOBAL_CONCURRENCY", "MCP_ACCOUNT_CONCURRENCY",
+		"MCP_GLOBAL_RATE_PER_MINUTE", "MCP_GLOBAL_RATE_BURST", "MCP_ACCOUNT_RATE_PER_MINUTE",
+		"MCP_ACCOUNT_RATE_BURST", "MCP_MAX_ACCOUNT_RATE_ENTRIES",
+	} {
+		t.Setenv(name, "")
+	}
+	config, err := mcpHTTPConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := mcpserver.DefaultHTTPAdmissionConfig()
+	if config != want {
+		t.Fatalf("config = %+v, want defaults %+v", config, want)
+	}
+}
+
+func TestMCPHTTPConfigReadsPositiveValues(t *testing.T) {
+	values := map[string]string{
+		"MCP_MAX_REQUEST_BODY_BYTES":   "8192",
+		"MCP_GLOBAL_CONCURRENCY":       "8",
+		"MCP_ACCOUNT_CONCURRENCY":      "2",
+		"MCP_GLOBAL_RATE_PER_MINUTE":   "120",
+		"MCP_GLOBAL_RATE_BURST":        "12",
+		"MCP_ACCOUNT_RATE_PER_MINUTE":  "30",
+		"MCP_ACCOUNT_RATE_BURST":       "3",
+		"MCP_MAX_ACCOUNT_RATE_ENTRIES": "7",
+	}
+	for name, value := range values {
+		t.Setenv(name, value)
+	}
+	config, err := mcpHTTPConfigFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.MaxRequestBodyBytes != 8192 || config.GlobalConcurrency != 8 || config.AccountConcurrency != 2 ||
+		config.GlobalRatePerMinute != 120 || config.GlobalRateBurst != 12 ||
+		config.AccountRatePerMinute != 30 || config.AccountRateBurst != 3 || config.MaxAccountEntries != 7 {
+		t.Fatalf("config = %+v, want configured values", config)
+	}
+}
+
+func TestMCPHTTPConfigRejectsNonPositiveValues(t *testing.T) {
+	for _, value := range []string{"0", "-1", "not-a-number"} {
+		t.Setenv("MCP_GLOBAL_CONCURRENCY", value)
+		if _, err := mcpHTTPConfigFromEnv(); err == nil {
+			t.Fatalf("value %q was accepted", value)
+		}
 	}
 }
