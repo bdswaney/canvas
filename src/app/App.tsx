@@ -5,6 +5,7 @@ import { Login } from '../pages/Login';
 import { Navbar } from './Navbar';
 import { Project } from '../pages/Project';
 import { Projects } from '../pages/Projects';
+import { Search } from '../pages/Search';
 import { Workspace } from '../pages/Workspace';
 import { docPath, navigate, parseRoute, projectPath, projectsPath, type Route } from './routes';
 import { useSession } from '../api/session';
@@ -78,6 +79,8 @@ function Routes({
           onSignedOut={handleSignedOut}
         />
       );
+    case 'search':
+      return <Search />;
   }
 }
 

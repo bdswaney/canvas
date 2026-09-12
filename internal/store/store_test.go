@@ -70,6 +70,9 @@ func storeConformance(t *testing.T, store Store, projectID, elsewhereID, userID,
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SaveDoc(ctx, strays.ID, Save{Artifact: "stray needle", Snapshot: []byte{1}, SHA256: []byte{1}, AuthorID: userID}); err != nil {
+		t.Fatal(err)
+	}
 
 	notes, err := store.CreateDoc(ctx, projectID, "Notes")
 	if err != nil {
@@ -80,6 +83,15 @@ func storeConformance(t *testing.T, store Store, projectID, elsewhereID, userID,
 	}
 	if notes.ProjectID != projectID {
 		t.Errorf("doc project = %q, want %q", notes.ProjectID, projectID)
+	}
+	if _, err := store.SaveDoc(ctx, notes.ID, Save{Artifact: "Café and 👍🏽", Snapshot: []byte{1}, SHA256: []byte{1}, AuthorID: userID}); err != nil {
+		t.Fatal(err)
+	}
+	if results, err := store.SearchDocuments(ctx, userID, "CAFÉ"); err != nil || len(results) != 1 || results[0].DocumentID != notes.ID || results[0].Version != 1 {
+		t.Errorf("saved-text search = %+v, %v; want notes version 1", results, err)
+	}
+	if results, err := store.SearchDocuments(ctx, userID, "cafe"); err != nil || len(results) != 0 {
+		t.Errorf("accent-folded search = %+v, %v; want no results", results, err)
 	}
 
 	imported, created, err := store.UpsertDoc(ctx, projectID, "github:42", "Issue 42")
@@ -142,6 +154,9 @@ func archiveConformance(t *testing.T, store Store, projectID, docID, userID stri
 	if docs, err := store.Docs(ctx, projectID, userID); err != nil || containsDoc(docs, docID) {
 		t.Errorf("archived doc still listed: %q, %v", docNames(docs), err)
 	}
+	if results, err := store.SearchDocuments(ctx, userID, "needle"); err != nil || containsDocSearch(results, docID) {
+		t.Errorf("archived doc search = %+v, %v; want no archived result", results, err)
+	}
 
 	// Archiving a project hides everything inside it, including rows that
 	// were never archived themselves.
@@ -193,6 +208,9 @@ func membershipConformance(t *testing.T, store Store, projectID, userID, strange
 	if member, err := store.ProjectMember(ctx, projectID, stranger); err != nil || member {
 		t.Fatalf("stranger is a member = %v, %v; want false", member, err)
 	}
+	if results, err := store.SearchDocuments(ctx, stranger, "CAFÉ"); err != nil || len(results) != 0 {
+		t.Errorf("stranger's search = %+v, %v; want none", results, err)
+	}
 	if member, err := store.ProjectMember(ctx, projectID, userID); err != nil || !member {
 		t.Fatalf("owner is a member = %v, %v; want true", member, err)
 	}
@@ -217,6 +235,9 @@ func membershipConformance(t *testing.T, store Store, projectID, userID, strange
 	}
 	if member, err := store.ProjectMember(ctx, projectID, stranger); err != nil || !member {
 		t.Fatalf("after adding, member = %v, %v; want true", member, err)
+	}
+	if results, err := store.SearchDocuments(ctx, stranger, "CAFÉ"); err != nil || len(results) != 1 {
+		t.Errorf("added member's search = %+v, %v; want the saved document", results, err)
 	}
 	projects, err := store.Projects(ctx, stranger)
 	if err != nil {
@@ -260,6 +281,15 @@ func containsMember(members []Member, userID string) bool {
 func containsDoc(docs []Doc, id string) bool {
 	for _, doc := range docs {
 		if doc.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+func containsDocSearch(results []SearchResult, id string) bool {
+	for _, result := range results {
+		if result.DocumentID == id {
 			return true
 		}
 	}

@@ -12,6 +12,20 @@ import (
 // ErrNotFound is returned for a doc or version that does not exist.
 var ErrNotFound = errors.New("not found")
 
+// Search bounds are part of the public contract shared by the HTTP and MCP
+// surfaces. A rune bound permits ordinary Unicode queries without allowing a
+// caller to turn an inexpensive substring lookup into an unbounded request.
+const (
+	MaxSearchQueryRunes = 256
+	MaxSearchResults    = 100
+)
+
+var (
+	ErrSearchQueryEmpty   = errors.New("search query is required")
+	ErrSearchQueryLong    = errors.New("search query is too long")
+	ErrSearchQueryInvalid = errors.New("search query must be valid UTF-8")
+)
+
 // Doc is a document's metadata. The live text is not here: it lives in the
 // journal and in the clients editing it.
 type Doc struct {
@@ -25,6 +39,18 @@ type Doc struct {
 	// client can tell whether what it holds has been saved. Empty when the doc
 	// has never been saved.
 	SavedSHA256 []byte `json:"savedSha256,omitempty"`
+}
+
+// SearchResult is one reachable document whose latest saved artifact matches
+// a search query. Search never returns the artifact itself: callers can open
+// the document to read it, while this result stays bounded regardless of
+// artifact size.
+type SearchResult struct {
+	DocumentID  string `json:"documentId"`
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	Name        string `json:"name"`
+	Version     int    `json:"version"`
 }
 
 // Version is one saved artifact. AuthorID is what is stored; Author is that
@@ -117,6 +143,11 @@ type Store interface {
 	// Docs lists the documents in a project userID belongs to, or across all
 	// of their projects when projectID is empty.
 	Docs(ctx context.Context, projectID, userID string) ([]Doc, error)
+
+	// SearchDocuments searches only the latest saved artifact of reachable,
+	// active documents. Membership and archive filtering are part of each
+	// implementation's query, not a caller-side filter.
+	SearchDocuments(ctx context.Context, userID, query string) ([]SearchResult, error)
 	Doc(ctx context.Context, docID string) (Doc, error)
 	CreateDoc(ctx context.Context, projectID, name string) (Doc, error)
 	// UpsertDoc uses sourceKey as a stable external identity. It creates a

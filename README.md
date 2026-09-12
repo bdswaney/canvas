@@ -178,6 +178,7 @@ Stdio runs in a separate process with its own relay. Its edits are stored, but d
 | `list_projects` | List the account's projects, with structured project metadata. |
 | `create_project` | Create a project and become its first member. |
 | `list_documents` | List accessible documents, optionally within one project, with structured metadata. |
+| `search_documents` | Search the latest saved artifact text with a case-insensitive Unicode substring query. Unsaved edits and never-saved documents are excluded. |
 | `read_document` | Read live text, including unsaved edits, or a specified saved version. Live reads also return a `baseVersion`. |
 | `document_history` | List saved versions and their authors. |
 | `create_document` | Create an empty document in a project. |
@@ -192,11 +193,13 @@ Edits are diffed against the current text, by line and then by character, and ea
 
 A diff cannot tell a client's change from one somebody else made after the client read the document, so `read_document` returns a `baseVersion` (a hash of the text it read) and `edit_document` accepts it back. If the text has changed since, nothing is written and the result carries the current text and its `baseVersion`; redo the edit against that. Without `baseVersion`, the text is applied to the document as it is now, which reverts any change the client did not see. Stale edits are refused rather than rebased because the server does not keep the text a client read.
 
-An archived document no longer appears in `list_documents` and cannot be read, edited, saved, or archived again through MCP; unknown and inaccessible ids get the same answer. There is no search tool yet.
+An archived document no longer appears in `list_documents` and cannot be read, edited, saved, or archived again through MCP; unknown and inaccessible ids get the same answer.
+
+Search is available from the web app's Search entry and `GET /api/search?q=...`, plus the MCP `search_documents` tool. It searches the latest saved artifact only, not the live journal: unsaved edits and never-saved documents are excluded. Matching is a case-insensitive Unicode substring without accent folding, so `café` matches `CAFÉ` but not `cafe`; emoji are matched by their exact code-point sequence. Queries are limited to 256 Unicode code points and results to 100 documents, ordered by document name and then id. Search results include the document and project metadata and the saved version that matched; they do not claim linguistic ranking or full-text search.
 
 ## Documents and access
 
-Live edits are journalled to PostgreSQL as Yjs updates. **Save** records a separate version containing the Markdown text and a CRDT snapshot. Closing and reopening a document does not discard edits that have reached the server, even if they have not been saved to version history.
+Live edits are journalled to PostgreSQL as Yjs updates. **Save** records a separate version containing the Markdown text and a CRDT snapshot. Closing and reopening a document does not discard edits that have reached the server, even if they have not been saved to version history. Search intentionally reads only the latest row in `doc_versions`, so live edits and never-saved documents do not affect search results.
 
 ### Preview images
 
@@ -221,7 +224,7 @@ Back up the database, not just saved Markdown: the journal can contain edits tha
 ```text
 src/
   app/          Application shell and routing
-  pages/        Projects, project details, and document workspace
+  pages/        Projects, project details, search, and document workspace
   editor/       CodeMirror integration and Markdown preview
   collab/       Yjs provider, presence, and remote pointers
   api/          HTTP client and session hooks

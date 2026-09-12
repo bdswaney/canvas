@@ -42,6 +42,14 @@ type documentsOutput struct {
 	Documents []documentView `json:"documents"`
 }
 
+type searchDocumentsInput struct {
+	Query string `json:"query" jsonschema:"case-insensitive substring to find in the latest saved document text"`
+}
+
+type searchOutput struct {
+	Results []store.SearchResult `json:"results"`
+}
+
 type documentOutput struct {
 	Document documentView `json:"document"`
 	Created  bool         `json:"created"`
@@ -126,6 +134,12 @@ func (s *Server) register(server *mcp.Server) {
 		Title:       "List documents",
 		Description: "List documents. Give a projectId to list one project's, or omit it for every document this account can reach.",
 	}, s.listDocuments)
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "search_documents",
+		Title:       "Search documents",
+		Description: "Search the latest saved text of documents this account can reach using a case-insensitive Unicode substring. Accents are not folded, emoji are matched by exact code points, and unsaved or never-saved edits are excluded. Results are ordered by document name and bounded.",
+	}, s.searchDocuments)
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name:  "read_document",
@@ -235,6 +249,21 @@ func (s *Server) listDocuments(ctx context.Context, _ *mcp.CallToolRequest, in l
 		views = append(views, documentViewOf(doc))
 	}
 	return text(b.String()), documentsOutput{Documents: views}, nil
+}
+
+func (s *Server) searchDocuments(ctx context.Context, _ *mcp.CallToolRequest, in searchDocumentsInput) (*mcp.CallToolResult, searchOutput, error) {
+	results, err := s.store.SearchDocuments(ctx, s.user.ID, in.Query)
+	if err != nil {
+		return nil, searchOutput{}, err
+	}
+	if len(results) == 0 {
+		return text("No documents matched."), searchOutput{Results: []store.SearchResult{}}, nil
+	}
+	var b strings.Builder
+	for _, result := range results {
+		fmt.Fprintf(&b, "%s\t%s\t%s\tversion %d\n", result.DocumentID, result.Name, result.ProjectName, result.Version)
+	}
+	return text(b.String()), searchOutput{Results: results}, nil
 }
 
 type readDocumentInput struct {

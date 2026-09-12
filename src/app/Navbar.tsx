@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useState } from 'react';
-import { IconFileText, IconLayersIntersect, IconLogout } from '@tabler/icons-react';
+import { IconFileText, IconLayersIntersect, IconLogout, IconSearch } from '@tabler/icons-react';
 import { ActionIcon, Loader, Title, Tooltip, UnstyledButton } from '@mantine/core';
 import { ColorSchemeToggle } from '../components/ColorSchemeToggle';
 import { getDoc, listDocs, type Doc } from '../api/docs';
 import { listProjects, useRefetched, type Project } from '../api/projects';
-import { docPath, navigate, projectPath, projectsPath, type Route } from './routes';
+import { docPath, navigate, projectPath, projectsPath, searchPath, type Route } from './routes';
 import classes from './Navbar.module.css';
 
-type Section = 'projects' | 'documents';
+type Section = 'projects' | 'documents' | 'search';
 
-// A project holds documents; a document is the thing people work on.
+// A project holds documents; a document is the thing people work on. Search
+// is global because its database membership query spans reachable projects.
 const sections = [
   { id: 'projects', label: 'Projects', icon: IconLayersIntersect },
   { id: 'documents', label: 'Documents', icon: IconFileText },
+  { id: 'search', label: 'Search', icon: IconSearch },
 ] as const satisfies readonly { id: Section; label: string; icon: typeof IconFileText }[];
 
 /**
@@ -50,7 +52,9 @@ function useCurrentProject(route: Route): string | null {
 
 // The section a route belongs to, so that following a link moves the rail too.
 function sectionFor(route: Route): Section {
-  return route.kind === 'doc' ? 'documents' : 'projects';
+  if (route.kind === 'doc') return 'documents';
+  if (route.kind === 'search') return 'search';
+  return 'projects';
 }
 
 export function Navbar({
@@ -85,6 +89,10 @@ export function Navbar({
               aria-label={label}
               onClick={() => {
                 setSection(id);
+                if (id === 'search') {
+                  navigate(searchPath());
+                  return;
+                }
                 // Documents are always a project's; with none open there is
                 // nothing to list, so go and pick one.
                 if (id === 'projects' || projectID === null) navigate(projectsPath());
@@ -140,6 +148,7 @@ export function Navbar({
             empty={projectID === null ? 'Open a project first.' : 'No documents in this project.'}
           />
         )}
+        {section === 'search' && <div className={classes.empty}>Search saved document text.</div>}
       </div>
     </nav>
   );

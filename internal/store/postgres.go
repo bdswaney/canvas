@@ -290,6 +290,44 @@ func (s *PostgresStore) Docs(ctx context.Context, projectID, userID string) ([]D
 	return scanDocs(rows)
 }
 
+func (s *PostgresStore) SearchDocuments(ctx context.Context, userID, query string) ([]SearchResult, error) {
+	if err := validateSearchQuery(query); err != nil {
+		return nil, err
+	}
+	// This is deliberately a bounded substring lookup, not linguistic ranking
+	// or full-text search. The lateral query selects exactly the newest saved
+	// artifact before matching; the membership and archive joins are the
+	// authorization boundary inside the database query.
+	rows, err := s.pool.Query(ctx, `
+		SELECT d.id, d.project_id, p.name, d.name, latest.version
+		FROM docs d
+		JOIN projects p ON p.id = d.project_id AND p.deleted_at IS NULL
+		JOIN project_members m ON m.project_id = d.project_id AND m.user_id = $1::uuid
+		JOIN LATERAL (
+			SELECT v.version, v.artifact
+			FROM doc_versions v
+			WHERE v.doc_id = d.id
+			ORDER BY v.version DESC
+			LIMIT 1
+		) latest ON position(casefold($2) IN casefold(latest.artifact)) > 0
+		WHERE d.deleted_at IS NULL
+		ORDER BY d.name COLLATE "C", d.id
+		LIMIT $3`, nullableUUID(userID), query, MaxSearchResults)
+	if err != nil {
+		return nil, fmt.Errorf("search documents: %w", err)
+	}
+	defer rows.Close()
+	results := make([]SearchResult, 0)
+	for rows.Next() {
+		var result SearchResult
+		if err := rows.Scan(&result.DocumentID, &result.ProjectID, &result.ProjectName, &result.Name, &result.Version); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		results = append(results, result)
+	}
+	return results, rows.Err()
+}
+
 func (s *PostgresStore) Doc(ctx context.Context, docID string) (Doc, error) {
 	// Archived documents are absent here on purpose: this is what the socket
 	// handler checks before accepting a connection, so an archived document

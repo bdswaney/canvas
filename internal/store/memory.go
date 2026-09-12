@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -221,6 +222,47 @@ func (s *MemoryStore) Docs(_ context.Context, projectID, userID string) ([]Doc, 
 	}
 	sort.Slice(docs, func(i, j int) bool { return docs[i].Name < docs[j].Name })
 	return docs, nil
+}
+
+func (s *MemoryStore) SearchDocuments(_ context.Context, userID, query string) ([]SearchResult, error) {
+	if err := validateSearchQuery(query); err != nil {
+		return nil, err
+	}
+	needle := foldedSearchQuery(query)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	results := make([]SearchResult, 0)
+	for _, doc := range s.docs {
+		if !s.live(doc.ID, doc.ProjectID) || !s.member(doc.ProjectID, userID) {
+			continue
+		}
+		artifacts := s.saved[doc.ID]
+		if len(artifacts) == 0 {
+			continue
+		}
+		version := len(artifacts)
+		if !strings.Contains(foldedSearchQuery(artifacts[version-1]), needle) {
+			continue
+		}
+		project := s.projects[doc.ProjectID]
+		projectName := ""
+		if project != nil {
+			projectName = project.Name
+		}
+		results = append(results, SearchResult{
+			DocumentID:  doc.ID,
+			ProjectID:   doc.ProjectID,
+			ProjectName: projectName,
+			Name:        doc.Name,
+			Version:     version,
+		})
+	}
+	sortSearchResults(results)
+	if len(results) > MaxSearchResults {
+		results = results[:MaxSearchResults]
+	}
+	return results, nil
 }
 
 func (s *MemoryStore) Doc(_ context.Context, docID string) (Doc, error) {
