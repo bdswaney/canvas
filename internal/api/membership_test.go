@@ -38,6 +38,7 @@ func TestNonMemberSeesNothing(t *testing.T) {
 	}{
 		{"GET", "/api/docs/" + doc.ID, nil},
 		{"GET", "/api/docs/" + doc.ID + "/versions", nil},
+		{"GET", "/api/docs/" + doc.ID + "/versions/1/artifact", nil},
 		{"POST", "/api/docs/" + doc.ID + "/save", map[string]string{"artifact": "x", "snapshot": "AQI="}},
 		{"POST", "/api/docs/" + doc.ID + "/restore/1", nil},
 		{"DELETE", "/api/docs/" + doc.ID, nil},
@@ -147,6 +148,9 @@ func TestArchivingKeepsHistory(t *testing.T) {
 	if w := do(t, handler, "POST", "/api/docs/"+doc.ID+"/save",
 		map[string]string{"artifact": "more", "snapshot": "AQI="}); w.Code != http.StatusNotFound {
 		t.Errorf("saving into an archived doc = %d, want 404", w.Code)
+	}
+	if w := do(t, handler, "GET", "/api/docs/"+doc.ID+"/versions/1/artifact", nil); w.Code != http.StatusNotFound {
+		t.Errorf("reading an archived artifact = %d, want 404", w.Code)
 	}
 
 	// The history is still there. Nothing in the API hands it back yet, which

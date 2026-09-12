@@ -34,12 +34,15 @@ async function json<T>(path: string, init?: RequestInit): Promise<T> {
 export const listDocs = (projectID?: string) =>
   json<Doc[]>(projectID ? `/api/docs?projectId=${projectID}` : '/api/docs');
 
-export const getDoc = (id: string) => json<Doc>(`/api/docs/${id}`);
+export const getDoc = (id: string, init?: RequestInit) => json<Doc>(`/api/docs/${id}`, init);
 
 export const createDoc = (name: string, projectID?: string) =>
   json<Doc>('/api/docs', { method: 'POST', body: JSON.stringify({ name, projectId: projectID }) });
 
 export const listVersions = (id: string) => json<Version[]>(`/api/docs/${id}/versions`);
+
+export const getVersionArtifact = (id: string, version: number, init?: RequestInit) =>
+  json<{ version: number; artifact: string }>(`/api/docs/${id}/versions/${version}/artifact`, init);
 
 export const restoreVersion = (id: string, version: number) =>
   json<{ version: number; artifact: string }>(`/api/docs/${id}/restore/${version}`, {

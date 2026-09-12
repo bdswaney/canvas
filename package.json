@@ -6,6 +6,7 @@
     "dev": "vite",
     "typecheck": "tsc --noEmit",
     "test:preview": "node --experimental-strip-types --test test/preview-image-policy.test.mjs",
+    "test:diff": "node --experimental-strip-types --test test/diff.test.mjs test/comparison.test.mjs test/workspace-comparison.test.mjs",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview"
   },

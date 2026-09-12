@@ -93,6 +93,29 @@ func TestSaveCreatesVersions(t *testing.T) {
 		t.Errorf("author id = %q, want %q", versions[0].AuthorID, user.ID)
 	}
 
+	// Reading an artifact is a separate, semantically read-only operation for
+	// comparisons. It has the same text and version shape as restore.
+	before := decode[store.Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil))
+	artifact := do(t, handler, "GET", "/api/docs/"+doc.ID+"/versions/1/artifact", nil)
+	if artifact.Code != http.StatusOK {
+		t.Fatalf("artifact = %d: %s", artifact.Code, artifact.Body)
+	}
+	gotArtifact := decode[struct {
+		Version  int    `json:"version"`
+		Artifact string `json:"artifact"`
+	}](t, artifact)
+	if gotArtifact.Version != 1 || gotArtifact.Artifact != "# One" {
+		t.Errorf("artifact = %+v, want version 1 and # One", gotArtifact)
+	}
+	after := decode[store.Doc](t, do(t, handler, "GET", "/api/docs/"+doc.ID, nil))
+	if after.CurrentVersion != before.CurrentVersion || !bytes.Equal(after.SavedSHA256, before.SavedSHA256) {
+		t.Errorf("reading artifact changed doc: before=%+v after=%+v", before, after)
+	}
+	afterVersions := decode[[]store.Version](t, do(t, handler, "GET", "/api/docs/"+doc.ID+"/versions", nil))
+	if len(afterVersions) != len(versions) {
+		t.Errorf("reading artifact changed saved history: before=%d after=%d", len(versions), len(afterVersions))
+	}
+
 	// Restoring hands back the older artifact for the client to apply; the
 	// server cannot turn text back into CRDT state on its own.
 	restored := do(t, handler, "POST", "/api/docs/"+doc.ID+"/restore/1", nil)
@@ -137,11 +160,26 @@ func TestSaveRejectsBadRequests(t *testing.T) {
 	}
 }
 
+func TestArtifactRejectsInvalidAndUnavailableVersions(t *testing.T) {
+	handler := newDocAPI(t, newTestStore(t))
+	doc := decode[store.Doc](t, do(t, handler, "POST", "/api/docs", map[string]string{"name": "Notes"}))
+	base := "/api/docs/" + doc.ID + "/versions/"
+	if w := do(t, handler, "GET", base+"nope/artifact", nil); w.Code != http.StatusBadRequest {
+		t.Errorf("invalid artifact version = %d, want 400", w.Code)
+	}
+	if w := do(t, handler, "GET", base+"1/artifact", nil); w.Code != http.StatusNotFound {
+		t.Errorf("unavailable artifact = %d, want 404", w.Code)
+	} else if decode[map[string]string](t, w)["message"] != "saved artifact is unavailable" {
+		t.Errorf("unavailable artifact message = %s", w.Body)
+	}
+}
+
 func TestUnknownDocumentIsNotFound(t *testing.T) {
 	handler := newDocAPI(t, newTestStore(t))
 	for _, target := range []string{
 		"/api/docs/00000000-0000-4000-8000-0000000000ff",
 		"/api/docs/00000000-0000-4000-8000-0000000000ff/versions",
+		"/api/docs/00000000-0000-4000-8000-0000000000ff/versions/1/artifact",
 		"/api/docs/00000000-0000-4000-8000-0000000000ff/restore/1",
 	} {
 		method := "GET"

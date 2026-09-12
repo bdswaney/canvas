@@ -26,7 +26,27 @@ import * as Y from 'yjs';
 import { Cursors } from '../collab/Cursors';
 import { Editor } from '../editor/Editor';
 import { Preview } from '../editor/Preview';
-import { listVersions, restoreVersion, saveDoc, sha256Base64, useDoc, type Version } from '../api/docs';
+import {
+  getDoc,
+  getVersionArtifact,
+  listVersions,
+  restoreVersion,
+  saveDoc,
+  sha256Base64,
+  useDoc,
+  type Version,
+} from '../api/docs';
+import { DocumentDiff } from '../components/DocumentDiff';
+import { DiffError, diffMarkdown, type MarkdownDiff } from '../diff/diff';
+import {
+  beginComparisonRequest,
+  cancelComparisonRequest,
+  createComparisonRequestController,
+  finishComparisonRequest,
+  isCurrentComparisonRequest,
+  type ComparisonRequestController,
+} from '../diff/comparison';
+import { createWorkspaceComparisonEntries } from '../diff/workspaceComparison';
 import { usePresence } from '../collab/presence';
 import {
   IconArrowBackUp,
@@ -34,6 +54,7 @@ import {
   IconColumns2,
   IconDeviceFloppy,
   IconEye,
+  IconGitCompare,
   IconHistory,
   IconPencil,
 } from '@tabler/icons-react';
@@ -54,6 +75,27 @@ const statusColors: Record<Status, string> = {
 // document can disagree. Mantine's storage hook tolerates blocked storage.
 type Layout = 'split' | 'single';
 type Pane = 'edit' | 'preview';
+
+type LiveComparison = {
+  kind: 'live';
+  id: number;
+  baselineVersion: number;
+  baselineText: string;
+  liveText: string;
+  diff: MarkdownDiff;
+  stale: boolean;
+};
+
+type VersionComparison = {
+  kind: 'versions';
+  fromVersion: number;
+  toVersion: number;
+  fromText: string;
+  toText: string;
+  diff: MarkdownDiff;
+};
+
+type Comparison = LiveComparison | VersionComparison;
 
 const layoutOptions = [
   { value: 'split', label: <LayoutLabel icon={<IconColumns2 size={16} stroke={1.5} />} name="Split view" /> },
@@ -95,7 +137,7 @@ export function Workspace({
   const { doc, awareness, status, synced, peers, refused } = useSync(docID, onSignedOut);
   const notes = useSharedText(doc, 'notes');
   const rendered = useTextSnapshot(notes);
-  const { doc: meta, error, refresh } = useDoc(docID);
+  const { doc: meta, error, refresh, setDoc: setMeta } = useDoc(docID);
   const surface = useRef<HTMLDivElement>(null);
   const present = usePresence(awareness, surface, username);
   const scheme = useComputedColorScheme('light');
@@ -104,6 +146,12 @@ export function Workspace({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [versions, setVersions] = useState<Version[] | null>(null);
+  const [comparison, setComparison] = useState<Comparison | null>(null);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [compareSelection, setCompareSelection] = useState<number | null>(null);
+  const [comparing, setComparing] = useState(false);
+  const comparisonRequest = useRef<ComparisonRequestController>(createComparisonRequestController());
+  const liveCapture = useRef<{ id: number; stale: boolean } | null>(null);
 
   const [layout, setLayout] = useLocalStorage<Layout>({
     key: 'canvas-workspace-layout',
@@ -167,6 +215,24 @@ export function Workspace({
   const dirty =
     meta === null || hash === null ? false : hash !== (meta.savedSha256 ?? emptyDocumentHash);
 
+  const liveArtifact = useCallback(() => notes.toString(), [notes]);
+
+  // Keep the stale marker tied to the live Y.Text rather than the debounced
+  // preview. The observer is installed for the component's lifetime so an
+  // edit made while the artifact request is in flight is not missed.
+  useEffect(() => {
+    const onChange = () => {
+      const capture = liveCapture.current;
+      if (!capture) return;
+      capture.stale = true;
+      setComparison((current) =>
+        current?.kind === 'live' && current.id === capture.id ? { ...current, stale: true } : current,
+      );
+    };
+    notes.observe(onChange);
+    return () => notes.unobserve(onChange);
+  }, [notes]);
+
   const save = useCallback(async () => {
     setSaving(true);
     setSaveError(null);
@@ -174,7 +240,7 @@ export function Workspace({
       // Both halves are read in the same tick. The preview's snapshot is
       // debounced, so using it here would store history that disagrees with
       // the document the snapshot came from.
-      const artifact = notes.toString();
+      const artifact = liveArtifact();
       const snapshot = Y.encodeStateAsUpdate(doc);
       await saveDoc(docID, artifact, snapshot);
       await refresh();
@@ -184,7 +250,104 @@ export function Workspace({
     } finally {
       setSaving(false);
     }
-  }, [doc, docID, notes, refresh]);
+  }, [doc, docID, liveArtifact, refresh]);
+
+  const beginComparison = () => {
+    const request = beginComparisonRequest(comparisonRequest.current);
+    setComparing(true);
+    return { id: request.id, signal: request.controller.signal };
+  };
+
+  const isCurrentComparison = (id: number) => isCurrentComparisonRequest(comparisonRequest.current, id);
+
+  const finishComparison = (id: number) => {
+    if (!finishComparisonRequest(comparisonRequest.current, id)) return false;
+    setComparing(false);
+    return true;
+  };
+
+  useEffect(() => () => cancelComparisonRequest(comparisonRequest.current), []);
+
+  const captureLiveComparisonImpl = async () => {
+    const { id, signal } = beginComparison();
+    setComparisonError(null);
+    try {
+      // This metadata read is the baseline linearization point. Capture the
+      // exact Y.Text only after it returns, then fetch that returned version.
+      const currentMeta = await getDoc(docID, { signal });
+      if (!isCurrentComparison(id)) return;
+      setMeta(currentMeta);
+      const liveText = liveArtifact();
+      liveCapture.current = { id, stale: false };
+      const baselineVersion = currentMeta.currentVersion;
+      const baselineText = baselineVersion === 0
+        ? ''
+        : (await getVersionArtifact(docID, baselineVersion, { signal })).artifact;
+      if (!isCurrentComparison(id)) return;
+      const diff = diffMarkdown(baselineText, liveText);
+      setComparison({
+        kind: 'live',
+        id,
+        baselineVersion,
+        baselineText,
+        liveText,
+        diff,
+        stale: liveCapture.current?.stale ?? false,
+      });
+    } catch (failure) {
+      if (!isCurrentComparison(id)) return;
+      liveCapture.current = null;
+      setComparisonError(failure instanceof DiffError ? failure.message : failure instanceof Error ? failure.message : 'Could not compare the live document');
+    } finally {
+      finishComparison(id);
+    }
+  };
+
+  const compareSavedVersionsImpl = async (version: number) => {
+    if (compareSelection === null) {
+      liveCapture.current = null;
+      setComparison(null);
+      setCompareSelection(version);
+      setComparisonError(null);
+      return;
+    }
+    if (compareSelection === version) {
+      setCompareSelection(null);
+      setComparison(null);
+      setComparisonError(null);
+      return;
+    }
+    const fromVersion = compareSelection;
+    const { id, signal } = beginComparison();
+    setComparison(null);
+    setComparisonError(null);
+    try {
+      const [from, to] = await Promise.all([
+        getVersionArtifact(docID, fromVersion, { signal }),
+        getVersionArtifact(docID, version, { signal }),
+      ]);
+      if (!isCurrentComparison(id)) return;
+      setComparison({
+        kind: 'versions',
+        fromVersion,
+        toVersion: version,
+        fromText: from.artifact,
+        toText: to.artifact,
+        diff: diffMarkdown(from.artifact, to.artifact),
+      });
+      setCompareSelection(null);
+    } catch (failure) {
+      if (!isCurrentComparison(id)) return;
+      setComparisonError(failure instanceof DiffError ? failure.message : failure instanceof Error ? failure.message : 'Could not compare saved versions');
+    } finally {
+      finishComparison(id);
+    }
+  };
+
+  const { captureLiveComparison, compareSavedVersions } = createWorkspaceComparisonEntries(comparisonRequest.current, {
+    captureLiveComparison: captureLiveComparisonImpl,
+    compareSavedVersions: compareSavedVersionsImpl,
+  });
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -237,35 +400,83 @@ export function Workspace({
   return (
     <Container size="xl" py="xl">
       <Drawer opened={versions !== null} onClose={() => setVersions(null)} title="History" position="right">
-        {versions === null || versions.length === 0 ? (
-          <Text c="dimmed" size="sm">
-            {versions === null ? '' : 'No saved versions yet.'}
-          </Text>
-        ) : (
-          <Table>
-            <Table.Tbody>
-              {versions.map((version) => (
-                <Table.Tr key={version.version}>
-                  <Table.Td>
-                    <Text fw={600}>Version {version.version}</Text>
-                    <Text size="xs" c="dimmed">
-                      {version.author || 'unknown'} · {new Date(version.createdAt).toLocaleString()}
-                    </Text>
-                  </Table.Td>
-                  <Table.Td align="right">
-                    <Button
-                      size="compact-sm"
-                      variant="light"
-                      leftSection={<IconArrowBackUp size={15} stroke={1.5} />}
-                      onClick={() => void restore(version.version)}
-                    >
-                      Restore
-                    </Button>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
+        {versions === null ? null : (
+          <Stack gap="md">
+            <Button
+              variant="light"
+              leftSection={<IconGitCompare size={16} stroke={1.5} />}
+              loading={comparing}
+              disabled={comparing}
+              onClick={() => void captureLiveComparison()}
+            >
+              Compare live with {meta.currentVersion === 0 ? 'empty baseline' : `version ${meta.currentVersion}`}
+            </Button>
+            <Text size="xs" c="dimmed">
+              Compare any two saved versions by selecting one row and then another. Comparisons are frozen snapshots.
+            </Text>
+            {compareSelection !== null && (
+              <Alert color="blue" variant="light">
+                Version {compareSelection} selected. Select another version to compare.
+              </Alert>
+            )}
+            {versions.length === 0 ? (
+              <Text c="dimmed" size="sm">No saved versions yet.</Text>
+            ) : (
+              <Table>
+                <Table.Tbody>
+                  {versions.map((version) => (
+                    <Table.Tr key={version.version}>
+                      <Table.Td>
+                        <Text fw={600}>Version {version.version}</Text>
+                        <Text size="xs" c="dimmed">
+                          {version.author || 'unknown'} · {new Date(version.createdAt).toLocaleString()}
+                        </Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Button
+                          size="compact-sm"
+                          variant={compareSelection === version.version ? 'filled' : 'subtle'}
+                          leftSection={<IconGitCompare size={15} stroke={1.5} />}
+                          disabled={comparing}
+                          onClick={() => void compareSavedVersions(version.version)}
+                        >
+                          {compareSelection === version.version ? 'Selected' : 'Compare'}
+                        </Button>
+                      </Table.Td>
+                      <Table.Td align="right">
+                        <Button
+                          size="compact-sm"
+                          variant="light"
+                          leftSection={<IconArrowBackUp size={15} stroke={1.5} />}
+                          disabled={comparing}
+                          onClick={() => void restore(version.version)}
+                        >
+                          Restore
+                        </Button>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            )}
+            {comparisonError && <Alert color="red" variant="light">{comparisonError}</Alert>}
+            {comparison && (
+              <Stack gap="xs">
+                <Divider />
+                <Text fw={600}>
+                  {comparison.kind === 'live'
+                    ? `Live document vs ${comparison.baselineVersion === 0 ? 'empty baseline' : `version ${comparison.baselineVersion}`}`
+                    : `Version ${comparison.fromVersion} → version ${comparison.toVersion}`}
+                </Text>
+                {comparison.kind === 'live' && comparison.stale && (
+                  <Alert color="orange" variant="light">
+                    Live text changed after this comparison was captured. The diff remains frozen; capture it again to include the newer text.
+                  </Alert>
+                )}
+                <DocumentDiff hunks={comparison.diff.hunks} />
+              </Stack>
+            )}
+          </Stack>
         )}
       </Drawer>
 
