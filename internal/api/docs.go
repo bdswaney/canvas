@@ -13,6 +13,7 @@ import (
 	"github.com/bdswaney/canvas/internal/store"
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -67,6 +68,7 @@ func (a *docAPI) routes(r chi.Router) {
 		r.Delete("/", a.archive)
 		r.Post("/save", a.save)
 		r.Get("/versions", a.versions)
+		r.Get("/versions/{version}/artifact", a.artifact)
 		r.Post("/restore/{version}", a.restore)
 	})
 }
@@ -271,6 +273,39 @@ func (a *docAPI) versions(w http.ResponseWriter, r *http.Request) {
 		versions = []store.Version{}
 	}
 	writeJSON(w, http.StatusOK, versions)
+}
+
+// artifact returns one immutable saved artifact. It is intentionally a GET
+// separate from restore: comparison never writes the live Y.Doc, journal, or
+// current version. The document membership check comes first so malformed
+// versions cannot turn this route into an existence oracle.
+func (a *docAPI) artifact(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.allowedDoc(w, r); !ok {
+		return
+	}
+	version, err := strconv.Atoi(chi.URLParam(r, "version"))
+	if err != nil || version < 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid version"})
+		return
+	}
+	artifact, err := a.store.Artifact(r.Context(), chi.URLParam(r, "docID"), version)
+	if errors.Is(err, store.ErrNotFound) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"message": "saved artifact is unavailable"})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !utf8.ValidString(artifact) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "saved artifact is unavailable"})
+		return
+	}
+	if len([]byte(artifact)) > maxArtifactBytes {
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"message": "saved artifact is too large"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"version": version, "artifact": artifact})
 }
 
 // restore hands back a saved artifact for the client to write into the live
