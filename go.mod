@@ -7,11 +7,13 @@ require (
 	github.com/cccteam/session v0.11.0
 	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/golang-migrate/migrate/v4 v4.20.0
 	github.com/jackc/pgx/v5 v5.11.0
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/spf13/cobra v1.9.1
 	github.com/tetratelabs/wazero v1.12.0
+	golang.org/x/oauth2 v0.36.0
+	golang.org/x/text v0.41.0
 )
 
 require (
@@ -84,10 +86,8 @@ require (
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/api v0.293.0 // indirect
 	google.golang.org/genproto v0.0.0-20260818201246-1b0934165a6f // indirect
