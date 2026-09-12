@@ -7,7 +7,7 @@ publish = false
 # yrs is the Yjs organisation's Rust port. The Go server drives it through the
 # flat WASM interface in src/lib.rs; nothing here is called from Rust.
 [dependencies]
-yrs = "0.18"
+yrs = "0.27"
 # Myers diff for canvas_set_text. Only the slice algorithms are used, so the
 # text helpers stay out.
 similar = { version = "3.2", default-features = false, features = ["std"] }
