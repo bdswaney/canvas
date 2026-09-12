@@ -5,10 +5,12 @@
 //   /              the projects list
 //   /project/<id>  one project: its documents and its members
 //   /doc/<id>      one document
+//   /search        saved document text search
 export type Route =
   | { kind: 'projects' }
   | { kind: 'project'; projectID: string }
-  | { kind: 'doc'; docID: string };
+  | { kind: 'doc'; docID: string }
+  | { kind: 'search' };
 
 // Ids are uuids from the server, but the check only has to be tight enough to
 // keep a stray path out of a URL; the server decides what actually exists.
@@ -29,6 +31,8 @@ export function parseRoute(pathname: string = window.location.pathname): Route {
       return parsed ? { kind: 'project', projectID: parsed } : { kind: 'projects' };
     case 'doc':
       return parsed ? { kind: 'doc', docID: parsed } : { kind: 'projects' };
+    case 'search':
+      return { kind: 'search' };
     default:
       return { kind: 'projects' };
   }
@@ -39,6 +43,7 @@ export function parseRoute(pathname: string = window.location.pathname): Route {
 export const projectsPath = () => '/';
 export const projectPath = (projectID: string) => `/project/${projectID}`;
 export const docPath = (docID: string) => `/doc/${docID}`;
+export const searchPath = () => '/search';
 
 // navigate lives here with the paths it takes. A synthetic popstate is what
 // tells useRoute to re-read the location, since pushState fires no event.

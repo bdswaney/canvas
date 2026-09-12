@@ -273,7 +273,7 @@ func TestToolsAreAdvertised(t *testing.T) {
 	}
 	want := map[string]bool{
 		"list_projects": false, "create_project": false, "list_documents": false,
-		"read_document": false, "document_history": false, "create_document": false,
+		"search_documents": false, "read_document": false, "document_history": false, "create_document": false,
 		"edit_document": false, "save_document": false, "upsert_document": false,
 		"archive_document": false,
 	}
@@ -298,6 +298,54 @@ func TestToolsAreAdvertised(t *testing.T) {
 		if !found {
 			t.Errorf("%s is not advertised", name)
 		}
+	}
+}
+
+func TestSearchUsesLatestSavedTextAndUnicodeContract(t *testing.T) {
+	cs, _, _, _ := session(t, owner)
+	created, _ := call(t, cs, "create_document", map[string]any{
+		"projectId": store.DefaultProjectID, "name": "Café notes",
+	})
+	docID := strings.Fields(strings.TrimPrefix(created, "Created "))[0]
+	if out, isErr := call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": "Café and 👍🏽"}); isErr {
+		t.Fatalf("edit: %s", out)
+	}
+	if result := callResult(t, cs, "save_document", map[string]any{"documentId": docID}); result.IsError {
+		t.Fatalf("save: %v", texts(result))
+	}
+	// This live edit must not alter what search sees until another save.
+	if out, isErr := call(t, cs, "edit_document", map[string]any{"documentId": docID, "text": "unsaved-only"}); isErr {
+		t.Fatalf("unsaved edit: %s", out)
+	}
+	neverSaved, _ := call(t, cs, "create_document", map[string]any{
+		"projectId": store.DefaultProjectID, "name": "Never saved",
+	})
+	neverSavedID := strings.Fields(strings.TrimPrefix(neverSaved, "Created "))[0]
+	if out, isErr := call(t, cs, "edit_document", map[string]any{"documentId": neverSavedID, "text": "needle"}); isErr {
+		t.Fatalf("never-saved edit: %s", out)
+	}
+
+	for _, tt := range []struct {
+		query string
+		want  bool
+	}{
+		{query: "CAFÉ", want: true},
+		{query: "cafe", want: false},
+		{query: "👍🏽", want: true},
+		{query: "👍🏻", want: false},
+		{query: "unsaved-only", want: false},
+		{query: "needle", want: false},
+	} {
+		t.Run(tt.query, func(t *testing.T) {
+			result := callResult(t, cs, "search_documents", map[string]any{"query": tt.query})
+			if result.IsError {
+				t.Fatalf("search error: %v", texts(result))
+			}
+			matched := strings.Contains(strings.Join(texts(result), "\n"), docID)
+			if matched != tt.want {
+				t.Fatalf("search %q matched=%v, result=%q", tt.query, matched, texts(result))
+			}
+		})
 	}
 }
 
@@ -630,6 +678,9 @@ func TestArchiveHidesTheDocumentAndKeepsHistory(t *testing.T) {
 	if body, _ := call(t, cs, "list_documents", map[string]any{}); strings.Contains(body, docID) {
 		t.Errorf("an archived document is still listed: %q", body)
 	}
+	if result := callResult(t, cs, "search_documents", map[string]any{"query": "kept"}); result.IsError || !strings.Contains(strings.Join(texts(result), "\n"), "No documents matched") {
+		t.Errorf("search archived document = %q, isErr=%v; want no results", texts(result), result.IsError)
+	}
 	for _, tool := range []string{"read_document", "document_history", "archive_document"} {
 		body, isErr := call(t, cs, tool, map[string]any{"documentId": docID})
 		if !isErr || body != "no document "+docID {
@@ -695,6 +746,9 @@ func TestOutsiderSeesAndReachesNothing(t *testing.T) {
 	}
 	if body, _ := call(t, cs, "list_documents", map[string]any{}); !strings.Contains(body, "No documents") {
 		t.Errorf("outsider's documents = %q, want none", body)
+	}
+	if result := callResult(t, cs, "search_documents", map[string]any{"query": "Private"}); result.IsError || !strings.Contains(strings.Join(texts(result), "\n"), "No documents matched") {
+		t.Errorf("outsider search = %q, isErr=%v; want no results", texts(result), result.IsError)
 	}
 	for _, tool := range []struct {
 		name string

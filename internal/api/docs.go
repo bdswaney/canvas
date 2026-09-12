@@ -36,7 +36,7 @@ type LiveAccess interface {
 	ArchiveDoc(context.Context, string) error
 }
 
-// Mount attaches every endpoint under r: /docs, /projects, and /users.
+// Mount attaches every endpoint under r: /search, /docs, /projects, and /users.
 // live is optional for callers that mount the API without a collaboration
 // hub. The browser server always passes its hub.
 func Mount(r chi.Router, st store.Store, authn auth.Authenticator, live ...LiveAccess) {
@@ -45,7 +45,9 @@ func Mount(r chi.Router, st store.Store, authn auth.Authenticator, live ...LiveA
 		access = live[0]
 	}
 	projects := &projectAPI{store: st, auth: authn, live: access}
-	r.Route("/docs", (&docAPI{store: st, auth: authn, live: access}).routes)
+	docs := &docAPI{store: st, auth: authn, live: access}
+	r.Get("/search", docs.search)
+	r.Route("/docs", docs.routes)
 	r.Route("/projects", projects.projectRoutes)
 	r.Get("/users", projects.listUsers)
 }
@@ -111,6 +113,26 @@ func (a *docAPI) allowedDoc(w http.ResponseWriter, r *http.Request) (store.Doc, 
 		return store.Doc{}, false
 	}
 	return doc, true
+}
+
+// search finds documents by their latest saved artifact. Live journal text is
+// deliberately absent: unsaved edits and documents with no saved version do
+// not enter the search contract.
+func (a *docAPI) search(w http.ResponseWriter, r *http.Request) {
+	user, _ := a.auth.UserFromCtx(r.Context())
+	results, err := a.store.SearchDocuments(r.Context(), user.ID, r.URL.Query().Get("q"))
+	if errors.Is(err, store.ErrSearchQueryEmpty) || errors.Is(err, store.ErrSearchQueryLong) || errors.Is(err, store.ErrSearchQueryInvalid) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if results == nil {
+		results = []store.SearchResult{}
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 // list returns the caller's documents, or one project's when ?projectId= is
