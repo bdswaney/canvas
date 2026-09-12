@@ -7,6 +7,9 @@ tmp_dir = ".tmp"
 # cookies are marked Secure and a plain-http localhost login cannot work.
 cmd = "npm run build && go build -tags insecurecookie -o ./.tmp/canvas ."
 entrypoint = ["./.tmp/canvas"]
+# Development is explicit at runtime; insecurecookie only controls the
+# cookie Secure attribute for plain-http localhost.
+full_bin = "CANVAS_ENV=development ./.tmp/canvas"
 delay = 500
 include_ext = ["go", "mod", "sum", "ts", "tsx", "js", "jsx", "json", "html", "css"]
 exclude_dir = [".git", ".tmp", "bin", "dist", "node_modules", "docs", "vendor"]

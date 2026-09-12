@@ -42,7 +42,7 @@ func tokenFixture(t *testing.T) (*PasswordAuth, string) {
 	}
 	t.Cleanup(pool.Close)
 
-	auth, err := NewPasswordAuth(pool, "")
+	auth, err := NewPasswordAuth(pool, "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
 	if err != nil {
 		t.Fatal(err)
 	}

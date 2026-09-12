@@ -46,7 +46,7 @@ func TestRealSessionReachesTheSocket(t *testing.T) {
 	}
 	t.Cleanup(st.Close)
 
-	authn, err := auth.NewPasswordAuth(st.Pool(), "")
+	authn, err := auth.NewPasswordAuth(st.Pool(), "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=")
 	if err != nil {
 		t.Fatal(err)
 	}
