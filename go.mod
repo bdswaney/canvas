@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/cccteam/ccc v0.3.3
-	github.com/cccteam/session v0.11.0
+	github.com/cccteam/session v0.11.1
 	github.com/coder/websocket v1.8.15
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/golang-migrate/migrate/v4 v4.20.0
