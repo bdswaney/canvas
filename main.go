@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -373,11 +374,23 @@ func runServer(ctx context.Context, runtime *commandRuntime) error {
 		return err
 	}
 	hub := relay.NewHub(runtime.db, runtime.engine)
-	mcpHandler := runtime.authn.RequireToken(mcp.NewStreamableHTTPHandler(
+	mcpConfig, err := mcpHTTPConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	mcpTransport := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
 			user, _ := runtime.authn.UserFromCtx(r.Context())
 			return mcpserver.New(runtime.db, runtime.engine, hub, user)
-		}, nil))
+		}, &mcp.StreamableHTTPOptions{
+			Stateless:                    true,
+			MaxRequestBodyBytes:          mcpConfig.MaxRequestBodyBytes,
+			PropagateRequestCancellation: true,
+		})
+	// Authenticate each request before the process-local gate. Stateless MCP
+	// requests do not retain a session or account identity between calls.
+	mcpHandler := runtime.authn.RequireToken(
+		mcpserver.NewHTTPAdmissionHandler(mcpConfig, runtime.authn.UserFromCtx, mcpTransport))
 
 	handler, err := server.New(assets, hub, originPatterns, runtime.authn, mcpHandler)
 	if err != nil {
@@ -441,6 +454,46 @@ func validCookieKey(value string) bool {
 	decoded, err := base64.StdEncoding.Strict().DecodeString(value)
 	return err == nil && len(decoded) >= cookieKeyBytes &&
 		base64.StdEncoding.EncodeToString(decoded) == value
+}
+
+// mcpHTTPConfigFromEnv reads process-local bounds for the stateless MCP
+// endpoint. Each value is a positive integer; zero is reserved for the
+// built-in default rather than disabling a safety limit.
+func mcpHTTPConfigFromEnv() (mcpserver.HTTPAdmissionConfig, error) {
+	config := mcpserver.DefaultHTTPAdmissionConfig()
+	values := []struct {
+		name string
+		set  func(int64)
+	}{
+		{"MCP_MAX_REQUEST_BODY_BYTES", func(value int64) { config.MaxRequestBodyBytes = value }},
+		{"MCP_GLOBAL_CONCURRENCY", func(value int64) { config.GlobalConcurrency = int(value) }},
+		{"MCP_ACCOUNT_CONCURRENCY", func(value int64) { config.AccountConcurrency = int(value) }},
+		{"MCP_GLOBAL_RATE_PER_MINUTE", func(value int64) { config.GlobalRatePerMinute = int(value) }},
+		{"MCP_GLOBAL_RATE_BURST", func(value int64) { config.GlobalRateBurst = int(value) }},
+		{"MCP_ACCOUNT_RATE_PER_MINUTE", func(value int64) { config.AccountRatePerMinute = int(value) }},
+		{"MCP_ACCOUNT_RATE_BURST", func(value int64) { config.AccountRateBurst = int(value) }},
+		{"MCP_MAX_ACCOUNT_RATE_ENTRIES", func(value int64) { config.MaxAccountEntries = int(value) }},
+	}
+	for _, item := range values {
+		value := os.Getenv(item.name)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || parsed <= 0 {
+			if err == nil {
+				err = errors.New("must be greater than zero")
+			}
+			return mcpserver.HTTPAdmissionConfig{}, fmt.Errorf("%s must be a positive integer: %w", item.name, err)
+		}
+		// The configured values are all positive bounded quantities. Reject a
+		// value that cannot be represented by int before converting it.
+		if parsed > int64(^uint(0)>>1) {
+			return mcpserver.HTTPAdmissionConfig{}, fmt.Errorf("%s is too large", item.name)
+		}
+		item.set(parsed)
+	}
+	return config, nil
 }
 
 // origins returns the allowed WebSocket origins. ORIGINS is required unless

@@ -199,9 +199,8 @@ func (w *bearerChallengeWriter) Flush() {
 func (w *bearerChallengeWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // requireBearerToken is the shared bearer-token middleware seam. Keeping the
-// SDK middleware here matters: the streamable HTTP transport reads TokenInfo
-// from its context when it creates a session and rejects a later request whose
-// user differs from that session.
+// SDK middleware here matters: the streamable HTTP transport and downstream
+// tools can read the authenticated TokenInfo from every request context.
 func requireBearerToken(verifier mcpauth.TokenVerifier, next http.Handler) http.Handler {
 	sdkMiddleware := mcpauth.RequireBearerToken(verifier, &mcpauth.RequireBearerTokenOptions{
 		// UserByToken performs the authoritative expiry check in SQL. The SDK
@@ -230,11 +229,11 @@ func requireBearerToken(verifier mcpauth.TokenVerifier, next http.Handler) http.
 	})
 }
 
-// RequireToken authenticates by bearer token and puts the account in the
-// context, in the same shape session validation uses — so everything
-// downstream, including the membership checks, cannot tell the two apart.
-// It also supplies the SDK's TokenInfo context, which binds stateful MCP
-// sessions to the account that created them.
+// RequireToken authenticates each request by bearer token and puts the account
+// in the context, in the same shape session validation uses — so everything
+// downstream, including the membership checks, cannot tell the two apart. It
+// also supplies the SDK's TokenInfo context to the stateless MCP transport and
+// tools for that request.
 //
 // There is deliberately no XSRF check here. XSRF defends against a browser
 // attaching a credential automatically; a token is only ever sent by a client
