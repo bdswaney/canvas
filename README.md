@@ -98,7 +98,17 @@ The CLI provides help and shell completion without connecting to PostgreSQL:
 
 Run the binary without a subcommand to start the web server. Invalid commands and arguments return a nonzero exit status before database initialization.
 
-Run the production binary behind an HTTPS reverse proxy that supports WebSockets. Production cookies require HTTPS; do not deploy a binary built with `-tags insecurecookie`.
+Run the production binary behind a trusted HTTPS reverse proxy that supports WebSockets. Production cookies require HTTPS; do not deploy a binary built with `-tags insecurecookie`.
+
+The application emits one browser security policy on SPA, asset, API/session, MCP, WebSocket, error, and not-found responses: CSP, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`. The app deliberately does **not** emit `Strict-Transport-Security`; configure HSTS at the trusted HTTPS reverse proxy, where TLS termination and the public deployment policy are owned. Until a canonical public origin is configured, the app's CSP deliberately uses `connect-src 'self' ws: wss:` so both development and deployed WebSocket upgrades remain usable. Mantine currently requires the documented `style-src 'self' 'unsafe-inline'` compatibility concession; inline scripts are not allowed generally—the fixed theme bootstrap is admitted only by its SHA-256 CSP hash.
+
+Verify the effective public response, rather than only the upstream process, after every proxy or header change:
+
+```sh
+curl --silent --show-error --dump-header - --output /dev/null https://nply.example.com/
+```
+
+Confirm that the response has exactly one CSP (including the theme hash and required directives), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, and `X-Content-Type-Options: nosniff`, plus the proxy's single `Strict-Transport-Security` header. Check an asset and an API endpoint as well; ensure the proxy neither strips these application headers nor adds a duplicate/conflicting CSP.
 
 | Variable | Purpose |
 | --- | --- |

@@ -6,6 +6,7 @@ import Markdown from 'react-markdown';
 import rehypeSanitize from 'rehype-sanitize';
 import remarkGfm from 'remark-gfm';
 import { isBlockedRemoteImageSource, MarkdownImage } from '../src/editor/MarkdownImage.ts';
+import { relayURL } from '../src/collab/sync.ts';
 
 function renderMarkdown(markdown) {
   return renderToStaticMarkup(
@@ -51,6 +52,11 @@ test('backslash and mixed network paths do not emit img elements', () => {
     const html = renderToStaticMarkup(createElement(MarkdownImage, { src: source, alt: 'Tracking pixel' }));
     assert.doesNotMatch(html, /<img\b/, source);
   }
+});
+
+test('WebSocket relay follows the page scheme for CSP-compatible connections', () => {
+  assert.equal(relayURL({ protocol: 'http:', host: 'localhost:8080' }), 'ws://localhost:8080/api/sync/doc');
+  assert.equal(relayURL({ protocol: 'https:', host: 'nply.example' }), 'wss://nply.example/api/sync/doc');
 });
 
 test('raw HTML remains excluded from the Markdown renderer', () => {
