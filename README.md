@@ -198,6 +198,10 @@ An archived document no longer appears in `list_documents` and cannot be read, e
 
 Live edits are journalled to PostgreSQL as Yjs updates. **Save** records a separate version containing the Markdown text and a CRDT snapshot. Closing and reopening a document does not discard edits that have reached the server, even if they have not been saved to version history.
 
+### Preview images
+
+For privacy, the Markdown preview does not load absolute HTTP(S) images from another origin. It shows an explanatory placeholder instead. Relative images and images served by the nPly page's own origin remain available when the browser can safely resolve them. Raw HTML is not enabled in the preview, and the rendered Markdown remains sanitized.
+
 **Restore** replaces the live text with a selected saved version. It leaves existing history intact and does not automatically save a new version. Concurrent typing can merge into the restored text, so coordinate restores with other editors when you need an exact result.
 
 Archiving hides a project or document without deleting its history. Archiving a project also hides its documents. There is no unarchive operation yet.

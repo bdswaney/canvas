@@ -19,6 +19,15 @@
   margin-right: 0.4rem;
 }
 
+.preview-image-blocked {
+  display: inline-block;
+  border: 1px dashed var(--mantine-color-dimmed);
+  border-radius: var(--mantine-radius-sm);
+  padding: 0.2rem 0.45rem;
+  color: var(--mantine-color-dimmed);
+  font-size: 0.9em;
+}
+
 .preview table {
   width: 100%;
 }
