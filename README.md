@@ -105,8 +105,8 @@ Run the production binary behind an HTTPS reverse proxy that supports WebSockets
 | `DATABASE_URL` | Required PostgreSQL connection string. PostgreSQL 18+ is required by the session schema. |
 | `COOKIE_KEY` | Base64-encoded key containing at least 32 random bytes. Required for the browser server unless `CANVAS_ENV=development`; development may use an in-memory ephemeral key. Keys are never printed or logged. Keep a production key stable across restarts or existing sessions are invalidated. |
 | `ADDR` | Listen address; defaults to `127.0.0.1:8080`. |
-| `CANVAS_ENV` | Set to `production` for deployment. Only the exact value `development` permits an ephemeral browser cookie key; any other value, including unset or unknown values, requires `COOKIE_KEY`. Any nonempty value other than `development` requires explicit `ORIGINS`. |
-| `ORIGINS` | Comma-separated allowed WebSocket origin patterns, such as `nply.example.com`. Unset development configurations allow ngrok wildcard hosts. |
+| `CANVAS_ENV` | Set to `production` for deployment. Only the exact value `development` permits an ephemeral browser cookie key and the ngrok wildcard origin defaults; any other value, including unset or unknown values, requires `COOKIE_KEY` and explicit `ORIGINS`. |
+| `ORIGINS` | Comma-separated allowed WebSocket origin patterns, such as `nply.example.com`. Values are trimmed and replace the defaults. If unset, exact `CANVAS_ENV=development` uses ngrok wildcard hosts; all other environments must provide at least one origin. |
 
 Generate a cookie key once and store it with your deployment secrets:
 
@@ -131,7 +131,7 @@ If a rebuilt binary appears to serve an old frontend, compare its embedded asset
 strings bin/canvas | grep -o 'index-[A-Za-z0-9_-]*\.js' | sort -u
 ```
 
-For temporary local sharing, install ngrok and run `mise run tunnel`. It targets port 8080 by default; `PORT` changes the tunnel target, not the server's listen address. Do not use the development wildcard-origin settings in production.
+For temporary local sharing, install ngrok and run `mise run tunnel`. It targets port 8080 by default; `PORT` changes the tunnel target, not the server's listen address. The wildcard origin defaults apply only with the exact `CANVAS_ENV=development`; set `ORIGINS` explicitly for production or any other environment.
 
 ## MCP
 

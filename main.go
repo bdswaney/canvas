@@ -450,9 +450,10 @@ func validCookieKey(value string) bool {
 func origins() ([]string, error) {
 	value := os.Getenv("ORIGINS")
 	if value == "" {
-		if env := os.Getenv("CANVAS_ENV"); env != "" && env != "development" {
+		env := os.Getenv("CANVAS_ENV")
+		if env != "development" {
 			return nil, fmt.Errorf("ORIGINS is required when CANVAS_ENV is %q: "+
-				"the development fallback allows any tunnel host", env)
+				"set ORIGINS to allowed origins or use exact CANVAS_ENV=development for local tunnel defaults", env)
 		}
 		log.Printf("ORIGINS is unset; allowing tunnel hosts %v. Set ORIGINS before deploying.",
 			defaultOrigins)
