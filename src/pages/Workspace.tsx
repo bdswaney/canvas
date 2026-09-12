@@ -13,6 +13,7 @@ import {
   SegmentedControl,
   SimpleGrid,
   Stack,
+  Switch,
   Table,
   Text,
   Title,
@@ -112,6 +113,13 @@ export function Workspace({
   const [pane, setPane] = useLocalStorage<Pane>({
     key: 'canvas-workspace-pane',
     defaultValue: 'edit',
+    getInitialValueInEffect: false,
+  });
+  // Editor preferences belong to this browser, not the shared document, so
+  // collaborators can choose Vim mode independently.
+  const [vimMode, setVimMode] = useLocalStorage<boolean>({
+    key: 'nply-workspace-vim-mode',
+    defaultValue: false,
     getInitialValueInEffect: false,
   });
 
@@ -280,6 +288,12 @@ export function Workspace({
               <Badge variant="light" color={dirty ? 'orange' : 'gray'}>
                 {dirty ? 'unsaved changes' : 'saved'}
               </Badge>
+              <Switch
+                aria-label="Vim mode"
+                label="Vim"
+                checked={vimMode}
+                onChange={(event) => setVimMode(event.currentTarget.checked)}
+              />
               {wide && (
                 <SegmentedControl
                   aria-label="Layout"
@@ -338,7 +352,13 @@ export function Workspace({
             <Stack gap="xs" display={showEditor ? undefined : 'none'}>
               {!singleColumn && <Text size="xs" c="dimmed" tt="uppercase" fw={700}>Markdown</Text>}
               <Divider />
-              <Editor text={notes} awareness={awareness} dark={scheme === 'dark'} hidden={!showEditor} />
+              <Editor
+                text={notes}
+                awareness={awareness}
+                dark={scheme === 'dark'}
+                vimMode={vimMode}
+                hidden={!showEditor}
+              />
             </Stack>
             {showPreview && (
               <Stack gap="xs">

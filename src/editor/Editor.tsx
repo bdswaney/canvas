@@ -2,8 +2,9 @@ import { useEffect, useRef } from 'react';
 import * as Y from 'yjs';
 import type { Awareness } from 'y-protocols/awareness';
 import { Compartment, EditorState } from '@codemirror/state';
-import { EditorView, keymap, lineNumbers, placeholder } from '@codemirror/view';
+import { drawSelection, EditorView, keymap, lineNumbers, placeholder } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
+import { vim } from '@replit/codemirror-vim';
 import { yCollab } from 'y-codemirror.next';
 import { markdownSupport } from './markdown';
 
@@ -34,6 +35,7 @@ function editorTheme(dark: boolean) {
 }
 
 const themeCompartment = new Compartment();
+const vimCompartment = new Compartment();
 
 /**
  * Editor binds a Y.Text to CodeMirror, editing Markdown. yCollab handles the
@@ -48,11 +50,13 @@ export function Editor({
   text,
   awareness,
   dark,
+  vimMode,
   hidden = false,
 }: {
   text: Y.Text;
   awareness: Awareness;
   dark: boolean;
+  vimMode: boolean;
   hidden?: boolean;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -60,6 +64,7 @@ export function Editor({
   // The scheme at mount seeds the initial theme without making the editor
   // effect depend on it; later changes go through the compartment below.
   const initialDark = useRef(dark);
+  const initialVimMode = useRef(vimMode);
 
   useEffect(() => {
     const element = host.current;
@@ -74,7 +79,11 @@ export function Editor({
         extensions: [
           lineNumbers(),
           history(),
+          // Vim must precede the ordinary keymap so it can handle normal,
+          // visual, and operator-pending modes before insert-mode bindings.
+          vimCompartment.of(initialVimMode.current ? vim({ status: true }) : []),
           keymap.of([...defaultKeymap, ...historyKeymap]),
+          drawSelection(),
           placeholder('Start typing Markdown. Everyone with this document open sees it as you type.'),
           EditorView.lineWrapping,
           markdownSupport(),
@@ -91,6 +100,12 @@ export function Editor({
       undoManager.destroy();
     };
   }, [awareness, text]);
+
+  useEffect(() => {
+    view.current?.dispatch({
+      effects: vimCompartment.reconfigure(vimMode ? vim({ status: true }) : []),
+    });
+  }, [vimMode]);
 
   // Swapping the theme through a compartment keeps the document, the
   // selection, and the peers' carets in place; rebuilding the view would not.
