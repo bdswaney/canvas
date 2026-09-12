@@ -204,7 +204,7 @@ Archiving hides a project or document without deleting its history. Archiving a 
 
 Project membership controls access to documents and MCP tools. Creating a project makes you a member. There are no owner or administrator roles within a project: any member can manage membership, and the last member cannot leave. Signed-in users can see the account list used by the member picker.
 
-WebSocket authorization is checked when a connection opens. Signing out elsewhere or removing a member does not close their existing sockets; access is checked again when they reconnect.
+WebSocket authorization is checked when a connection opens. Removing a project member, archiving a project, or archiving a document logically revokes the affected sockets synchronously in the browser-serving process; physical socket closure is initiated asynchronously before the admin request returns. Revocation is linearized with journal appends, so those sockets cannot persist or receive later document updates, and a reconnect is denied by the current membership/archive check. This is deliberately process-local: there is no cross-process invalidation or distributed eventing, so deployments that serve browsers from multiple processes must keep that boundary in mind. Signing out elsewhere, session expiry, and account disablement are checked when a socket opens (and on reconnect) but do not currently emit an event that can close an already-open socket.
 
 ### Storage and compaction
 

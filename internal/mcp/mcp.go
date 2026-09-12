@@ -31,11 +31,21 @@ type Engine interface {
 	SetText(ctx context.Context, state []byte, name, next string) ([]byte, error)
 }
 
-// Broadcaster hands an update to the clients editing a document. relay.Hub
-// implements it; without one a write would be invisible to anybody with the
-// document open until they reconnected.
+// Broadcaster hands an update to the clients editing a document. The actor is
+// part of the operation because a caller may have passed the first membership
+// check and then been removed before the update reaches the hub. relay.Hub
+// rechecks that actor while holding its access read lock; without that second
+// check a write would be invisible to authorization until a reconnect.
 type Broadcaster interface {
-	Inject(ctx context.Context, docID string, update []byte) error
+	InjectFor(ctx context.Context, docID, actorID string, update []byte) error
+}
+
+// Archiver is optional on a Broadcaster. The browser HTTP server supplies a
+// relay.Hub, so archive operations can share its access lock and close live
+// sockets. A broadcaster without this method remains usable for isolated MCP
+// tests and separate processes, where no browser hub can be notified.
+type Archiver interface {
+	ArchiveDoc(ctx context.Context, docID string) error
 }
 
 // textName is the shared Y.Text the editor binds to; see src/pages/Workspace.tsx.

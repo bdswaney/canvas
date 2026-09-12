@@ -9,6 +9,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/bdswaney/canvas/internal/auth"
+	"github.com/bdswaney/canvas/internal/relay"
 	"github.com/bdswaney/canvas/internal/store"
 	"github.com/bdswaney/canvas/internal/ydoc"
 )
@@ -20,17 +21,32 @@ const (
 )
 
 // injector stands in for the relay: it journals the update the way the hub
-// would and records that a broadcast was asked for.
+// would and records that the actor-aware injection path was called.
 type injector struct {
 	store    store.Store
 	injected int
 	last     []byte
 }
 
-func (i *injector) Inject(ctx context.Context, docID string, update []byte) error {
+func (i *injector) InjectFor(ctx context.Context, docID, _ string, update []byte) error {
 	i.injected++
 	i.last = update
 	return i.store.Append(ctx, docID, update)
+}
+
+// pausedHub lets the race tests stop an already-authorized MCP edit immediately
+// before it enters the Hub. Revocation can then complete before InjectFor
+// rechecks the durable state.
+type pausedHub struct {
+	hub    *relay.Hub
+	paused chan struct{}
+	resume chan struct{}
+}
+
+func (p *pausedHub) InjectFor(ctx context.Context, docID, actorID string, update []byte) error {
+	close(p.paused)
+	<-p.resume
+	return p.hub.InjectFor(ctx, docID, actorID, update)
 }
 
 // session wires a server to an in-process client, so the tests exercise the
@@ -66,6 +82,94 @@ func connect(t *testing.T, st store.Store, engine *ydoc.Engine, relay Broadcaste
 	}
 	t.Cleanup(func() { cs.Close() })
 	return cs
+}
+
+func TestMCPEditRechecksAccessAfterRemovalOrArchive(t *testing.T) {
+	cases := []struct {
+		name   string
+		revoke func(*relay.Hub, string) error
+	}{
+		{
+			name: "member removal",
+			revoke: func(h *relay.Hub, _ string) error {
+				return h.RemoveProjectMember(context.Background(), store.DefaultProjectID, outsider)
+			},
+		},
+		{
+			name: "document archive",
+			revoke: func(h *relay.Hub, docID string) error {
+				return h.ArchiveDoc(context.Background(), docID)
+			},
+		},
+		{
+			name: "project archive",
+			revoke: func(h *relay.Hub, _ string) error {
+				return h.ArchiveProject(context.Background(), store.DefaultProjectID)
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st := store.NewMemoryStore()
+			if err := st.AddProjectMember(t.Context(), store.DefaultProjectID, owner, ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AddProjectMember(t.Context(), store.DefaultProjectID, outsider, owner); err != nil {
+				t.Fatal(err)
+			}
+			doc, err := st.CreateDoc(t.Context(), store.DefaultProjectID, tc.name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hub := relay.NewHub(st, nil)
+			gate := &pausedHub{hub: hub, paused: make(chan struct{}), resume: make(chan struct{})}
+			engine, err := ydoc.New(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { engine.Close(context.Background()) })
+			cs := connect(t, st, engine, gate, outsider)
+
+			result := make(chan struct {
+				result *mcp.CallToolResult
+				err    error
+			}, 1)
+			go func() {
+				res, callErr := cs.CallTool(context.Background(), &mcp.CallToolParams{
+					Name: "edit_document", Arguments: map[string]any{
+						"documentId": doc.ID, "text": "must not land",
+					},
+				})
+				result <- struct {
+					result *mcp.CallToolResult
+					err    error
+				}{res, callErr}
+			}()
+			<-gate.paused
+
+			if err := tc.revoke(hub, doc.ID); err != nil {
+				t.Fatal(err)
+			}
+			close(gate.resume)
+			out := <-result
+			if out.err != nil {
+				t.Fatal(out.err)
+			}
+			if !out.result.IsError {
+				t.Fatalf("edit after %s was accepted: %v", tc.name, texts(out.result))
+			}
+			if got := texts(out.result); len(got) == 0 || got[0] != "no document "+doc.ID {
+				t.Fatalf("edit after %s = %q; want no-document error", tc.name, got)
+			}
+			updates, err := st.Load(t.Context(), doc.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(updates) != 0 {
+				t.Fatalf("edit after %s appended %x", tc.name, updates)
+			}
+		})
+	}
 }
 
 func callResult(t *testing.T, cs *mcp.ClientSession, name string, args map[string]any) *mcp.CallToolResult {

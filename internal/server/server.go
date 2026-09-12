@@ -73,7 +73,7 @@ func New(assets fs.FS, h *relay.Hub, originPatterns []string, authn auth.Authent
 		r.Group(func(r chi.Router) {
 			r.Use(authn.ValidateSession)
 			r.Use(authn.ValidateXSRFToken)
-			api.Mount(r, h.Store(), authn)
+			api.Mount(r, h.Store(), authn, h)
 		})
 
 		// Collaboration sockets: authenticated, but no XSRF check. A browser
