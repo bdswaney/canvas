@@ -351,7 +351,7 @@ func (s *Server) apply(ctx context.Context, docID string, state []byte, current,
 	if s.relay == nil {
 		return false, fmt.Errorf("this server cannot write: no relay attached")
 	}
-	if err := s.relay.Inject(ctx, docID, update); err != nil {
+	if err := s.relay.InjectFor(ctx, docID, s.user.ID, update); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -559,15 +559,21 @@ func (s *Server) upsertDocument(ctx context.Context, _ *mcp.CallToolRequest, in 
 }
 
 // archiveDocument hides a document the way the web app's archive does. Saved
-// versions are kept: store.ArchiveDoc marks the row rather than deleting it.
-// An archived document fails the membership check like a missing one, so
-// archiving it again is answered the same way as an unknown id.
+// versions are kept: ArchiveDoc marks the row rather than deleting it. When
+// the broadcaster is the browser-serving Hub, it also closes this process's
+// live sockets under the same access boundary. An archived document fails the
+// membership check like a missing one, so archiving it again is answered the
+// same way as an unknown id.
 func (s *Server) archiveDocument(ctx context.Context, _ *mcp.CallToolRequest, in docRef) (*mcp.CallToolResult, archiveOutput, error) {
 	doc, err := s.allowed(ctx, in.DocumentID)
 	if err != nil {
 		return nil, archiveOutput{}, err
 	}
-	if err := s.store.ArchiveDoc(ctx, in.DocumentID); err != nil {
+	archive := s.store.ArchiveDoc
+	if archiver, ok := s.relay.(Archiver); ok {
+		archive = archiver.ArchiveDoc
+	}
+	if err := archive(ctx, in.DocumentID); err != nil {
 		// Archived by somebody else since the check above: still missing, and
 		// still answered the same way.
 		if errors.Is(err, store.ErrNotFound) {

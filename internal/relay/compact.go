@@ -96,23 +96,50 @@ func (h *Hub) compactAfter(docID string) {
 }
 
 // Inject journals an update that did not come from a connected client and
-// hands it to everyone editing the document.
-//
-// Without the broadcast, a write from outside the relay — an MCP client, say —
-// would be invisible to anybody with the document open until they next
-// reconnected: the journal would hold it, but no live session would have seen
-// it. Appending through the session also keeps Hub.history's cache in step, so
-// the next client to join is not served a journal missing the change.
+// hands it to everyone editing the document. It is kept for internal callers
+// that already own the authorization decision; MCP writes use InjectFor so the
+// actor is checked again at the same linearization point as the append.
 func (h *Hub) Inject(ctx context.Context, docID string, update []byte) error {
 	if len(update) == 0 {
 		return nil
 	}
+	h.access.RLock()
+	defer h.access.RUnlock()
+	return h.inject(ctx, docID, update)
+}
 
-	// Keep the map lock through the append and broadcast. Otherwise a browser
-	// can create a session after we observe no session but before the journal
-	// row is written; its one-time history load can then miss the update and
-	// remain stale because Inject took the no-session path. Holding this lock
-	// also prevents a last-client removal from racing the same decision.
+// InjectFor is the actor-aware injection path for external writers such as
+// MCP. The document and membership checks happen while the Hub access read
+// lock is held, and that lock remains held through the append and broadcast.
+// A removal or archive therefore linearizes either before the whole operation
+// or after it; an MCP request that passed an earlier check cannot write after
+// revocation completes.
+func (h *Hub) InjectFor(ctx context.Context, docID, actorID string, update []byte) error {
+	if len(update) == 0 {
+		return nil
+	}
+
+	h.access.RLock()
+	defer h.access.RUnlock()
+
+	doc, err := h.store.Doc(ctx, docID)
+	if err != nil {
+		return fmt.Errorf("no document %s", docID)
+	}
+	member, err := h.store.ProjectMember(ctx, doc.ProjectID, actorID)
+	if err != nil {
+		return fmt.Errorf("check membership: %w", err)
+	}
+	if !member {
+		return fmt.Errorf("no document %s", docID)
+	}
+	return h.inject(ctx, docID, update)
+}
+
+// inject appends and broadcasts while the caller holds access.RLock. Keep the
+// Hub map lock through both operations so a newly joining browser cannot load
+// a stale history between the no-session decision and the append.
+func (h *Hub) inject(ctx context.Context, docID string, update []byte) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	session := h.sessions[docID]

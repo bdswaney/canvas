@@ -14,6 +14,7 @@ import (
 type projectAPI struct {
 	store store.Store
 	auth  auth.Authenticator
+	live  LiveAccess
 }
 
 func (a *projectAPI) projectRoutes(r chi.Router) {
@@ -105,15 +106,22 @@ func (a *projectAPI) createProject(w http.ResponseWriter, r *http.Request) {
 
 // Archiving hides a project and deletes nothing. Its documents and their
 // whole saved history survive, hidden along with it, because that history is
-// the only layer here that cannot be rebuilt. There is no un-archive yet;
-// restoring one is an UPDATE away, but it needs a decision about what
-// restoring a document inside a still-archived project should mean.
+// the only layer here that cannot be rebuilt. When mounted with a live Hub,
+// the archive logically revokes this process's existing project sockets
+// synchronously; physical socket closure is initiated asynchronously before
+// the request returns. There is no un-archive yet; restoring one is an UPDATE
+// away, but it needs a decision about what restoring a document inside a
+// still-archived project should mean.
 func (a *projectAPI) archiveProject(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	if !a.allowed(w, r, projectID) {
 		return
 	}
-	if err := a.store.ArchiveProject(r.Context(), projectID); err != nil {
+	archive := a.store.ArchiveProject
+	if a.live != nil {
+		archive = a.live.ArchiveProject
+	}
+	if err := archive(r.Context(), projectID); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -163,7 +171,11 @@ func (a *projectAPI) addMember(w http.ResponseWriter, r *http.Request) {
 }
 
 // removeMember refuses to empty a project. A project with no members is
-// unreachable by anyone, including whoever would have to put it right.
+// unreachable by anyone, including whoever would have to put it right. The
+// live Hub path changes membership and logically revokes that user's document
+// sockets under one in-process lock. Physical socket closure is initiated
+// asynchronously before the request returns, while the old socket cannot
+// append or receive later updates after the revocation point.
 func (a *projectAPI) removeMember(w http.ResponseWriter, r *http.Request) {
 	projectID := chi.URLParam(r, "projectID")
 	if !a.allowed(w, r, projectID) {
@@ -180,7 +192,11 @@ func (a *projectAPI) removeMember(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	if err := a.store.RemoveProjectMember(r.Context(), projectID, chi.URLParam(r, "userID")); err != nil {
+	remove := a.store.RemoveProjectMember
+	if a.live != nil {
+		remove = a.live.RemoveProjectMember
+	}
+	if err := remove(r.Context(), projectID, chi.URLParam(r, "userID")); err != nil {
 		writeError(w, err)
 		return
 	}

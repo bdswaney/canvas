@@ -63,18 +63,48 @@ var (
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9-]{1,64}$`)
 
 type client struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn      *websocket.Conn
+	send      chan []byte
+	userID    string
+	projectID string
+	room      *docSession
+
+	// revoked is protected by room.mu. It is deliberately tied to the
+	// authenticated account and project, never to a Yjs client id or an
+	// awareness name.
+	revoked bool
+}
+
+func (c *client) isRevoked() bool {
+	c.room.mu.Lock()
+	defer c.room.mu.Unlock()
+	return c.revoked
 }
 
 // push queues a frame for the writer goroutine, waiting for room in the
 // buffer rather than dropping frames this connection asked for.
 func (c *client) push(ctx context.Context, frame []byte) error {
-	select {
-	case c.send <- frame:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	// Queueing and revocation are one room-level linearization point. A
+	// revoked client may still have frames queued from before revocation, but
+	// it cannot acquire the room lock and queue anything after the mark.
+	for {
+		c.room.mu.Lock()
+		if c.revoked {
+			c.room.mu.Unlock()
+			return errors.New("client access revoked")
+		}
+		select {
+		case c.send <- frame:
+			c.room.mu.Unlock()
+			return nil
+		default:
+			c.room.mu.Unlock()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 
@@ -98,6 +128,12 @@ type Hub struct {
 
 	mu       sync.Mutex
 	sessions map[string]*docSession
+
+	// access serializes membership and archive changes with frame handling.
+	// A removal therefore has one clear point: frames already holding the
+	// read lock finish before the store change and live-socket revocation;
+	// later frames cannot append or broadcast as the removed account.
+	access sync.RWMutex
 }
 
 // NewHub returns a Hub over the given store. Without a Merger it relays and
@@ -192,7 +228,7 @@ func (r *docSession) broadcast(sender *client, frame []byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for c := range r.clients {
-		if c == sender {
+		if c == sender || c.revoked {
 			continue
 		}
 		select {
@@ -210,6 +246,91 @@ func syncFrame(subType uint64, payload []byte) []byte {
 // Store is the store the hub journals into, shared with the HTTP API.
 func (h *Hub) Store() store.Store { return h.store }
 
+// revokeClients marks matching live clients while the access write lock is
+// held, then initiates physical socket closure asynchronously. The logical
+// mark happens before Close so a reader racing with the close cannot append or
+// enqueue another frame.
+func (h *Hub) revokeClients(match func(*client) bool, status websocket.StatusCode, reason string) {
+	var revoked []*client
+
+	h.mu.Lock()
+	for _, session := range h.sessions {
+		session.mu.Lock()
+		for c := range session.clients {
+			if c.revoked || !match(c) {
+				continue
+			}
+			c.revoked = true
+			revoked = append(revoked, c)
+		}
+		session.mu.Unlock()
+	}
+	h.mu.Unlock()
+
+	for _, c := range revoked {
+		// Close, rather than CloseNow, gives y-websocket the permanent status
+		// code. It can wait for the peer's WebSocket lock, so do not hold the
+		// membership operation hostage to a client that stopped reading: the
+		// room-level mark is already authoritative and the close is initiated
+		// immediately in this goroutine.
+		go func(c *client) {
+			if err := c.conn.Close(status, reason); err != nil {
+				c.conn.CloseNow()
+			}
+		}(c)
+	}
+}
+
+// RemoveProjectMember changes durable membership and logically revokes that
+// account's live document sockets as one in-process operation. Physical socket
+// closure is initiated asynchronously before the caller returns. The access
+// lock is the boundary between an update that was already in flight and one
+// that must be refused; it is intentionally not a distributed invalidation
+// mechanism.
+func (h *Hub) RemoveProjectMember(ctx context.Context, projectID, userID string) error {
+	h.access.Lock()
+	defer h.access.Unlock()
+
+	if err := h.store.RemoveProjectMember(ctx, projectID, userID); err != nil {
+		return err
+	}
+	h.revokeClients(func(c *client) bool {
+		return c.projectID == projectID && c.userID == userID
+	}, StatusNotAMember, "not a member of this project")
+	return nil
+}
+
+// ArchiveProject hides the project and logically revokes every socket serving
+// one of its documents; physical closure is initiated asynchronously before
+// the caller returns. New connections are rejected by the store's Doc lookup.
+func (h *Hub) ArchiveProject(ctx context.Context, projectID string) error {
+	h.access.Lock()
+	defer h.access.Unlock()
+
+	if err := h.store.ArchiveProject(ctx, projectID); err != nil {
+		return err
+	}
+	h.revokeClients(func(c *client) bool { return c.projectID == projectID }, StatusUnknownDoc, "project archived")
+	return nil
+}
+
+// ArchiveDoc hides a document and logically revokes its existing sockets;
+// physical closure is initiated asynchronously before the caller returns.
+// This preserves the durable journal and saved history while preventing a
+// live socket from continuing to edit an archived row.
+func (h *Hub) ArchiveDoc(ctx context.Context, docID string) error {
+	h.access.Lock()
+	defer h.access.Unlock()
+
+	if err := h.store.ArchiveDoc(ctx, docID); err != nil {
+		return err
+	}
+	h.revokeClients(func(c *client) bool {
+		return c.room != nil && c.room.docID == docID
+	}, StatusUnknownDoc, "document archived")
+	return nil
+}
+
 // Handler serves the collaboration socket for one document, expected to be
 // mounted at a route with a {docID} parameter.
 func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.HandlerFunc {
@@ -226,7 +347,15 @@ func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.Ha
 			return
 		}
 		conn.SetReadLimit(readLimit)
-		defer conn.CloseNow()
+		var joined *client
+		defer func() {
+			// A revoked client is being closed with a permanent status by
+			// revokeClients. CloseNow here would race that frame and turn the
+			// revocation into an abnormal close that y-websocket retries.
+			if joined == nil || !joined.isRevoked() {
+				conn.CloseNow()
+			}
+		}()
 
 		// The session is checked after the upgrade rather than by middleware
 		// so that an expired session closes the socket with a code the client
@@ -238,10 +367,16 @@ func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.Ha
 			return
 		}
 
+		// Keep the in-process access read lock from the existence check through
+		// joining. A concurrent archive/removal therefore cannot pass this
+		// check and then become a live client after its write-side revocation.
+		h.access.RLock()
+
 		// A socket for a document that does not exist would otherwise create a
 		// session out of thin air and journal updates nothing can ever read.
 		doc, err := h.store.Doc(ctx, name)
 		if err != nil {
+			h.access.RUnlock()
 			conn.Close(StatusUnknownDoc, "unknown document")
 			return
 		}
@@ -249,13 +384,20 @@ func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.Ha
 		// The real gate: a document is reachable only by members of its
 		// project. This is the same rule the REST handlers apply, checked
 		// here because a live socket bypasses them entirely.
-		user, _ := authn.UserFromCtx(ctx)
+		user, ok := authn.UserFromCtx(ctx)
+		if !ok {
+			h.access.RUnlock()
+			conn.Close(StatusUnauthenticated, "session expired")
+			return
+		}
 		switch member, err := h.store.ProjectMember(ctx, doc.ProjectID, user.ID); {
 		case err != nil:
+			h.access.RUnlock()
 			log.Printf("sync %s: membership check: %v", name, err)
 			conn.Close(websocket.StatusInternalError, "membership check failed")
 			return
 		case !member:
+			h.access.RUnlock()
 			conn.Close(StatusNotAMember, "not a member of this project")
 			return
 		}
@@ -263,11 +405,17 @@ func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.Ha
 		ctx, cancel := context.WithCancel(ctx)
 		defer cancel()
 
-		c := &client{conn: conn, send: make(chan []byte, sendBuffer)}
+		c := &client{
+			conn: conn, send: make(chan []byte, sendBuffer),
+			userID: user.ID, projectID: doc.ProjectID,
+		}
 		rm := h.join(name, c)
+		c.room = rm
+		joined = c
+		h.access.RUnlock()
 		defer h.leave(rm, c)
 
-		go writeLoop(ctx, cancel, c)
+		go writeLoop(ctx, cancel, c, rm)
 
 		// Ask the client for state it already holds; without this a client
 		// with local history never pushes it to the server.
@@ -278,20 +426,31 @@ func (h *Hub) Handler(originPatterns []string, authn auth.Authenticator) http.Ha
 		if err := h.readLoop(ctx, rm, c); err != nil {
 			log.Printf("sync %s: %v", name, err)
 		}
-		conn.Close(websocket.StatusNormalClosure, "")
+		if !c.isRevoked() {
+			conn.Close(websocket.StatusNormalClosure, "")
+		}
 	}
 }
 
-func writeLoop(ctx context.Context, cancel context.CancelFunc, c *client) {
+func writeLoop(ctx context.Context, cancel context.CancelFunc, c *client, rm *docSession) {
 	defer cancel()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case frame := <-c.send:
+			// Serialize the final revoked check with the close mark. A frame
+			// already being written may finish before revocation; no queued
+			// frame starts after the write-side lock marks this client.
+			rm.mu.Lock()
+			if c.revoked {
+				rm.mu.Unlock()
+				return
+			}
 			writeCtx, done := context.WithTimeout(ctx, 10*time.Second)
 			err := c.conn.Write(writeCtx, websocket.MessageBinary, frame)
 			done()
+			rm.mu.Unlock()
 			if err != nil {
 				return
 			}
@@ -318,6 +477,19 @@ func (h *Hub) readLoop(ctx context.Context, rm *docSession, c *client) error {
 }
 
 func (h *Hub) handleFrame(ctx context.Context, rm *docSession, c *client, frame []byte) error {
+	// Membership/archive revocation takes the write side of this lock. Holding
+	// its read side across journal append and broadcast gives every frame a
+	// deterministic before-or-after relationship with removal.
+	h.access.RLock()
+	defer h.access.RUnlock()
+
+	rm.mu.Lock()
+	revoked := c.revoked
+	rm.mu.Unlock()
+	if revoked {
+		return nil
+	}
+
 	reader := lib0.NewReader(frame)
 	messageType, err := reader.VarUint()
 	if err != nil {

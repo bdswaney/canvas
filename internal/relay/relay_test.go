@@ -7,6 +7,7 @@ import (
 	"github.com/bdswaney/canvas/internal/auth/authtest"
 	"github.com/bdswaney/canvas/internal/lib0"
 	"github.com/bdswaney/canvas/internal/store"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -20,6 +21,7 @@ import (
 // demand, so each test names its documents rather than juggling ids.
 type testRelay struct {
 	store store.Store
+	hub   *Hub
 	url   string
 	ids   map[string]string
 }
@@ -28,6 +30,33 @@ type blockingAppendStore struct {
 	store.Store
 	appendStarted chan struct{}
 	allowAppend   chan struct{}
+}
+
+type testUserIDKey struct{}
+type testAuthUserKey struct{}
+
+// testRequestAuth makes the authenticated account come from a test-only
+// request context value, allowing one hub test to exercise two distinct
+// server-authenticated users without using Yjs identities.
+type testRequestAuth struct{ auth.Authenticator }
+
+func (a testRequestAuth) ValidateSessionCtx(ctx context.Context) (context.Context, error) {
+	ctx, err := a.Authenticator.ValidateSessionCtx(ctx)
+	if err != nil {
+		return ctx, err
+	}
+	id, _ := ctx.Value(testUserIDKey{}).(string)
+	if id == "" {
+		id = authtest.User().ID
+	}
+	return context.WithValue(ctx, testAuthUserKey{}, auth.User{ID: id, Username: id}), nil
+}
+
+func (a testRequestAuth) UserFromCtx(ctx context.Context) (auth.User, bool) {
+	if user, ok := ctx.Value(testAuthUserKey{}).(auth.User); ok {
+		return user, true
+	}
+	return a.Authenticator.UserFromCtx(ctx)
 }
 
 func (s *blockingAppendStore) Append(ctx context.Context, docID string, update []byte) error {
@@ -48,11 +77,35 @@ func newTestRelay(t *testing.T, st store.Store) *testRelay {
 func newTestRelayWithAuth(t *testing.T, st store.Store, authn auth.Authenticator) *testRelay {
 	t.Helper()
 	router := chi.NewRouter()
-	router.Get("/api/sync/doc/{docID}", NewHub(st, nil).Handler(nil, authn))
+	hub := NewHub(st, nil)
+	router.Get("/api/sync/doc/{docID}", hub.Handler(nil, authn))
 	server := httptest.NewServer(router)
 	t.Cleanup(server.Close)
 	return &testRelay{
 		store: st,
+		hub:   hub,
+		url:   "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sync/doc/",
+		ids:   map[string]string{},
+	}
+}
+
+func newMultiUserRelay(t *testing.T, st store.Store) *testRelay {
+	t.Helper()
+	router := chi.NewRouter()
+	router.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := context.WithValue(r.Context(), testUserIDKey{}, r.Header.Get("X-Test-User"))
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	})
+	hub := NewHub(st, nil)
+	authn := testRequestAuth{Authenticator: authtest.Stub{Valid: true}}
+	router.Get("/api/sync/doc/{docID}", hub.Handler(nil, authn))
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+	return &testRelay{
+		store: st,
+		hub:   hub,
 		url:   "ws" + strings.TrimPrefix(server.URL, "http") + "/api/sync/doc/",
 		ids:   map[string]string{},
 	}
@@ -77,11 +130,24 @@ func (r *testRelay) dial(t *testing.T, name string) *websocket.Conn {
 	return r.dialID(t, r.docID(t, name))
 }
 
+func (r *testRelay) dialAs(t *testing.T, name, userID string) *websocket.Conn {
+	t.Helper()
+	return r.dialIDAs(t, r.docID(t, name), userID)
+}
+
 func (r *testRelay) dialID(t *testing.T, id string) *websocket.Conn {
+	return r.dialIDAs(t, id, "")
+}
+
+func (r *testRelay) dialIDAs(t *testing.T, id, userID string) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	conn, _, err := websocket.Dial(ctx, r.url+id, nil)
+	var options *websocket.DialOptions
+	if userID != "" {
+		options = &websocket.DialOptions{HTTPHeader: http.Header{"X-Test-User": []string{userID}}}
+	}
+	conn, _, err := websocket.Dial(ctx, r.url+id, options)
 	if err != nil {
 		t.Fatalf("dial %s: %v", id, err)
 	}
@@ -332,5 +398,151 @@ func TestNonMemberSocketIsClosed(t *testing.T) {
 	defer cancel()
 	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != StatusNotAMember {
 		t.Fatalf("close status = %d (%v), want %d", websocket.CloseStatus(err), err, StatusNotAMember)
+	}
+}
+
+// Removing a member revokes all of that member's live document sockets at the
+// hub's access boundary. The other authenticated member remains able to edit,
+// while the removed socket can neither append nor receive the later update.
+func TestMemberRemovalRevokesLiveAccessWithoutAffectingCollaborator(t *testing.T) {
+	st := newTestStore(t)
+	if err := st.AddProjectMember(context.Background(), store.DefaultProjectID, authtest.OutsiderID, authtest.User().ID); err != nil {
+		t.Fatal(err)
+	}
+	relay := newMultiUserRelay(t, st)
+	doc, err := st.CreateDoc(context.Background(), store.DefaultProjectID, "Notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.ids["Notes"] = doc.ID
+
+	removed := relay.dialAs(t, "Notes", authtest.OutsiderID)
+	owner := relay.dialAs(t, "Notes", authtest.User().ID)
+	expectSync(t, removed, syncStep1)
+	expectSync(t, owner, syncStep1)
+
+	if err := relay.hub.RemoveProjectMember(context.Background(), store.DefaultProjectID, authtest.OutsiderID); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := removed.Read(ctx); websocket.CloseStatus(err) != StatusNotAMember {
+		t.Fatalf("removed socket read succeeded after revocation: %v", err)
+	}
+
+	// An inbound frame racing after the close is refused. It is intentionally
+	// written directly rather than through write(), because a closed socket is
+	// the expected client-side result.
+	_ = removed.Write(ctx, websocket.MessageBinary, syncFrame(syncUpdate, []byte{0x09}))
+
+	// The unaffected collaborator can still append, and can replay the result
+	// on the same socket. The removed peer never receives this update because
+	// it was marked before the close and removed from the broadcast audience.
+	update := []byte{0x01, 0x02, 0x03}
+	write(t, owner, syncFrame(syncUpdate, update))
+	write(t, owner, syncFrame(syncStep1, emptyStateVector))
+	if payload := expectSync(t, owner, syncStep2); !bytes.Equal(payload, update) {
+		t.Fatalf("owner replay = %x, want %x", payload, update)
+	}
+	updates, err := st.Load(context.Background(), doc.ID)
+	if err != nil || len(updates) != 1 || !bytes.Equal(updates[0], update) {
+		t.Fatalf("journal after revoked write = %x, %v; want only owner update", updates, err)
+	}
+
+	// A fresh connection for the removed account is denied by the durable
+	// membership check, not by a client id carried in the Yjs protocol.
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, relay.url+doc.ID,
+		&websocket.DialOptions{HTTPHeader: http.Header{"X-Test-User": []string{authtest.OutsiderID}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if _, _, err := conn.Read(ctx); websocket.CloseStatus(err) != StatusNotAMember {
+		t.Fatalf("reconnection close status = %d (%v), want %d", websocket.CloseStatus(err), err, StatusNotAMember)
+	}
+}
+
+// A frame already inside the append linearization point is allowed to finish
+// before removal; the removal cannot return until that append is durable and
+// the socket is marked revoked. This makes the race deterministic instead of
+// relying on a scheduler window.
+func TestMemberRemovalWaitsForInFlightAppend(t *testing.T) {
+	base := newTestStore(t)
+	if err := base.AddProjectMember(context.Background(), store.DefaultProjectID, authtest.OutsiderID, authtest.User().ID); err != nil {
+		t.Fatal(err)
+	}
+	st := &blockingAppendStore{
+		Store:         base,
+		appendStarted: make(chan struct{}),
+		allowAppend:   make(chan struct{}),
+	}
+	relay := newMultiUserRelay(t, st)
+	doc, err := base.CreateDoc(context.Background(), store.DefaultProjectID, "Race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.ids["Race"] = doc.ID
+	conn := relay.dialAs(t, "Race", authtest.OutsiderID)
+	expectSync(t, conn, syncStep1)
+
+	update := []byte{0x04, 0x05}
+	write(t, conn, syncFrame(syncUpdate, update))
+	<-st.appendStarted
+
+	removed := make(chan error, 1)
+	go func() {
+		removed <- relay.hub.RemoveProjectMember(context.Background(), store.DefaultProjectID, authtest.OutsiderID)
+	}()
+	select {
+	case err := <-removed:
+		t.Fatalf("removal completed while append was blocked: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(st.allowAppend)
+	if err := <-removed; err != nil {
+		t.Fatal(err)
+	}
+	updates, err := base.Load(context.Background(), doc.ID)
+	if err != nil || len(updates) != 1 || !bytes.Equal(updates[0], update) {
+		t.Fatalf("journal after linearized removal = %x, %v; want in-flight update", updates, err)
+	}
+}
+
+func TestArchiveRevokesLiveDocumentAccess(t *testing.T) {
+	st := newTestStore(t)
+	relay := newTestRelay(t, st)
+	doc, err := st.CreateDoc(context.Background(), store.DefaultProjectID, "Archived doc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectDoc, err := st.CreateDoc(context.Background(), store.DefaultProjectID, "Archived project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	relay.ids["Archived doc"] = doc.ID
+	relay.ids["Archived project"] = projectDoc.ID
+	docConn := relay.dial(t, "Archived doc")
+	projectConn := relay.dial(t, "Archived project")
+	expectSync(t, docConn, syncStep1)
+	expectSync(t, projectConn, syncStep1)
+
+	if err := relay.hub.ArchiveDoc(context.Background(), doc.ID); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, _, err := docConn.Read(ctx); websocket.CloseStatus(err) != StatusUnknownDoc {
+		t.Fatalf("document archive close = %d (%v), want %d", websocket.CloseStatus(err), err, StatusUnknownDoc)
+	}
+
+	if err := relay.hub.ArchiveProject(context.Background(), store.DefaultProjectID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := projectConn.Read(ctx); websocket.CloseStatus(err) != StatusUnknownDoc {
+		t.Fatalf("project archive close = %d (%v), want %d", websocket.CloseStatus(err), err, StatusUnknownDoc)
 	}
 }

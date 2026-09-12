@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -24,10 +25,27 @@ const (
 	maxSnapshotBytes = 16 << 20
 )
 
+// LiveAccess is the in-process coordination boundary between REST changes
+// and the collaboration hub. It changes durable state and logically revokes
+// affected sockets under one linearization lock; physical closure is initiated
+// asynchronously before the request returns. A nil value keeps the API useful
+// in isolated tests and deployments without a live hub.
+type LiveAccess interface {
+	RemoveProjectMember(context.Context, string, string) error
+	ArchiveProject(context.Context, string) error
+	ArchiveDoc(context.Context, string) error
+}
+
 // Mount attaches every endpoint under r: /docs, /projects, and /users.
-func Mount(r chi.Router, st store.Store, authn auth.Authenticator) {
-	projects := &projectAPI{store: st, auth: authn}
-	r.Route("/docs", (&docAPI{store: st, auth: authn}).routes)
+// live is optional for callers that mount the API without a collaboration
+// hub. The browser server always passes its hub.
+func Mount(r chi.Router, st store.Store, authn auth.Authenticator, live ...LiveAccess) {
+	var access LiveAccess
+	if len(live) != 0 {
+		access = live[0]
+	}
+	projects := &projectAPI{store: st, auth: authn, live: access}
+	r.Route("/docs", (&docAPI{store: st, auth: authn, live: access}).routes)
 	r.Route("/projects", projects.projectRoutes)
 	r.Get("/users", projects.listUsers)
 }
@@ -36,6 +54,7 @@ func Mount(r chi.Router, st store.Store, authn auth.Authenticator) {
 type docAPI struct {
 	store store.Store
 	auth  auth.Authenticator
+	live  LiveAccess
 }
 
 func (a *docAPI) routes(r chi.Router) {
@@ -199,11 +218,18 @@ func (a *docAPI) save(w http.ResponseWriter, r *http.Request) {
 
 // archive hides a document. Its saved versions are kept: history is the one
 // layer of this system that cannot be rebuilt, so nothing here deletes it.
+// When mounted with a live Hub, existing sockets are logically revoked
+// synchronously; physical socket closure is initiated asynchronously before
+// the archive request returns.
 func (a *docAPI) archive(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.allowedDoc(w, r); !ok {
 		return
 	}
-	if err := a.store.ArchiveDoc(r.Context(), chi.URLParam(r, "docID")); err != nil {
+	archive := a.store.ArchiveDoc
+	if a.live != nil {
+		archive = a.live.ArchiveDoc
+	}
+	if err := archive(r.Context(), chi.URLParam(r, "docID")); err != nil {
 		writeError(w, err)
 		return
 	}
